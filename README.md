@@ -1,3 +1,1 @@
-# RUSH
-
-We will upload the code and extended paper ASAP.
+# RUSH - Resource-aware Query Scheduling across Heterogeneous Cloud Compute Services
