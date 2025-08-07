@@ -19,10 +19,10 @@ class RUSHCore:
                 EC2Executor({'name': 'EC2-1', 'instance_type': 'm5.8xlarge', 'cost_per_hour': 1.536}),
             ],
             ServiceType.LAMBDA: [
-                LambdaExecutor(),
+                LambdaExecutor({'name': 'Lambda-1', 'memory_size': 512}),
             ],
             ServiceType.ATHENA: [
-                AthenaExecutor()
+                AthenaExecutor({'name': 'Athena-1', 'cost_per_tb': 5.0})
             ]
         }
         

@@ -55,6 +55,10 @@ class RUSHParameters:
     LAMBDA_COST_PER_MS = 0.0000166667
     LAMBDA_LOAD_BALANCE_FACTOR = 0.1
     
+    # S3 access costs for Lambda shuffle operations
+    S3_READ_COST_PER_1000_REQUESTS = 0.0004   # $0.0004 per 1000 GET requests
+    S3_WRITE_COST_PER_1000_REQUESTS = 0.005   # $0.005 per 1000 PUT requests
+    
     ATHENA_DEFAULT_COST_PER_TB = 5.0
     ATHENA_LOAD_BALANCE_FACTOR = 0.15
     
@@ -63,6 +67,7 @@ class RUSHParameters:
     
     # Demo and development settings
     DEMO_PROCESSING_DELAY = 10  # Seconds to let background schedulers process in demo
+    SIMULATION_MODE = True  # Global setting: True for simulation, False for real execution
 
 
 def calculate_migration_threshold(predicted_latency: float) -> float:

@@ -7,7 +7,9 @@ class BaseServiceExecutor(ABC):
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.name = config.get('name', 'Unknown')
-        self.simulation_mode = config.get('simulation_mode', True)  # Default to simulation
+        from ..config.parameters import RUSHParameters
+        params = RUSHParameters()
+        self.simulation_mode = config.get('simulation_mode', params.SIMULATION_MODE)  # Config can override global setting
         
     async def execute_query(self, query: Query) -> QueryResult:
         """Main execution method that chooses between real and simulation"""

@@ -133,14 +133,8 @@ class Router:
         service_predictions = {}  # Store predictions for inter-scheduler
         
         for service_type in [ServiceType.EC2, ServiceType.LAMBDA, ServiceType.ATHENA]:
-            score = self._calculate_service_score(service_type, pipeline_predictions, query, queues, pipeline_data)
+            score, estimated_time, estimated_cost = self._calculate_service_score(service_type, pipeline_predictions, query, queues, pipeline_data)
             service_scores[service_type] = score
-            
-            # Get time and cost predictions for this service
-            estimated_time = self._estimate_execution_time(service_type, pipeline_predictions, pipeline_data, 
-                                                          self._get_athena_scan_info(service_type, pipeline_predictions, pipeline_data))
-            estimated_cost = self._estimate_execution_cost(service_type, pipeline_predictions, pipeline_data,
-                                                          self._get_athena_scan_info(service_type, pipeline_predictions, pipeline_data))
             
             service_predictions[service_type.value] = {
                 'time': estimated_time,
@@ -157,7 +151,7 @@ class Router:
         print(f"Selected best service: {best_service.value}")
         return best_service
     
-    def _calculate_service_score(self, service_type: ServiceType, predictions: List[Dict[str, float]], query: Query, queues=None, pipeline_data: List[Dict] = None) -> float:
+    def _calculate_service_score(self, service_type: ServiceType, predictions: List[Dict[str, float]], query: Query, queues=None, pipeline_data: List[Dict] = None) -> tuple[float, float, float]:
         """
         Calculate score for a service type using: estimated_time * estimated_cost^a * (1 + b * queue_size)
         Lower score = better choice
@@ -169,7 +163,7 @@ class Router:
             queues: Current service queues (optional)
             
         Returns:
-            Score (lower is better)
+            Tuple of (score, estimated_time, estimated_cost) where score is lower for better choices
         """        
         # Pre-calculate Athena data scanning info to avoid duplication
         athena_scan_info = None
@@ -184,10 +178,16 @@ class Router:
             }
         
         # Step 1: Estimate execution time for this service
-        estimated_time = self._estimate_execution_time(service_type, predictions, pipeline_data, athena_scan_info)
+        if service_type == ServiceType.LAMBDA:
+            estimated_time, lambda_gb_seconds, s3_writes, s3_reads = self._estimate_execution_time(service_type, predictions, pipeline_data, athena_scan_info)
+        else:
+            estimated_time = self._estimate_execution_time(service_type, predictions, pipeline_data, athena_scan_info)
+            lambda_gb_seconds = None
+            s3_writes = 0
+            s3_reads = 0
 
-        # Step 2: Estimate execution cost for this service
-        estimated_cost = self._estimate_execution_cost(service_type, predictions, pipeline_data, athena_scan_info)
+        # Step 2: Estimate execution cost for this service (pass S3 access info for Lambda)
+        estimated_cost = self._estimate_execution_cost(service_type, predictions, pipeline_data, athena_scan_info, lambda_gb_seconds, s3_writes, s3_reads)
 
         # Step 3: Get parameters
         cost_performance_param = self.params.COST_PERFORMANCE_TRADEOFF
@@ -214,9 +214,9 @@ class Router:
         
         print(f"  Time: {estimated_time:.3f}s, Cost: ${estimated_cost:.6f}, Queue: {queue_size}, Score: {score:.3f}")
         
-        return score
+        return score, estimated_time, estimated_cost
     
-    def _estimate_execution_time(self, service_type: ServiceType, predictions: List[Dict[str, float]], pipeline_data: List[Dict] = None, athena_scan_info: Dict = None) -> float:
+    def _estimate_execution_time(self, service_type: ServiceType, predictions: List[Dict[str, float]], pipeline_data: List[Dict] = None, athena_scan_info: Dict = None):
         """
         Estimate total execution time for this service
         
@@ -225,7 +225,8 @@ class Router:
             predictions: Pipeline-level resource predictions
             
         Returns:
-            Estimated execution time in seconds
+            For Lambda: tuple of (estimated_time_seconds, lambda_gb_seconds)
+            For other services: estimated_time_seconds as float
         """
         if service_type == ServiceType.EC2:
             # VM time: sum all pipeline durations directly
@@ -237,13 +238,139 @@ class Router:
             return total_duration
             
         elif service_type == ServiceType.LAMBDA:
-            # Lambda time: sum pipeline durations
-            try:
-                total_duration = sum(pred['duration'] for pred in predictions)
-            except KeyError as e:
-                raise ValueError(f"Missing 'duration' key in pipeline prediction: {e}")
+            # Lambda time: map pipeline resource demands to Lambda execution model
+            # Configuration: 100 instances, 4GB memory each
+            lambda_instance_count = 100
+            lambda_memory_gb = 4
             
-            return total_duration
+            # Resource mapping:
+            # - CPU: 1 Lambda instance (4GB) = 1.2 VM cores = 3.75% of 32-core VM
+            # - IO: 1 Lambda instance = 75 MB/s bandwidth = 5.86% of 1.25GB/s VM bandwidth
+            lambda_cpu_per_instance = 1.2  # VM cores equivalent per instance
+            lambda_io_per_instance = 75  # MB/s per instance
+            
+            # Total Lambda cluster capacity
+            total_lambda_cpu_capacity = lambda_cpu_per_instance * lambda_instance_count  # 120 VM cores equivalent
+            total_lambda_io_capacity = lambda_io_per_instance * lambda_instance_count  # 7500 MB/s
+            
+            # Process each pipeline stage
+            pipeline_times = []
+            total_gb_seconds = 0.0  # Track GB-seconds for cost calculation
+            
+            try:
+                for pred in predictions:
+                    cpu_utilization = pred['cpu_usage']  # CPU utilization (0-1)
+                    io_utilization = pred['io_usage']    # IO utilization (0-1)
+                    duration = pred['duration']          # Original duration in seconds
+                    
+                    # Calculate resource demands for this stage
+                    # CPU demand = CPU utilization × duration (CPU-seconds)
+                    cpu_demand = cpu_utilization * duration  # CPU-seconds needed
+                    
+                    # IO demand = IO utilization × duration (IO-seconds)
+                    io_demand = io_utilization * duration  # IO-seconds needed
+                    
+                    # Map to Lambda execution time
+                    # CPU time estimate = CPU demand / Lambda cluster CPU capacity
+                    cpu_time_estimate = cpu_demand / total_lambda_cpu_capacity if total_lambda_cpu_capacity > 0 else 0
+                    
+                    # IO time estimate = IO demand / Lambda cluster IO capacity
+                    io_time_estimate = io_demand / total_lambda_io_capacity if total_lambda_io_capacity > 0 else 0
+                    
+                    # Take the larger value as the pipeline stage time estimate
+                    stage_time_estimate = max(cpu_time_estimate, io_time_estimate)
+                    pipeline_times.append(stage_time_estimate)
+                    
+                    # Calculate GB-seconds for this stage: runtime × memory × instances
+                    stage_gb_seconds = stage_time_estimate * lambda_memory_gb * lambda_instance_count
+                    total_gb_seconds += stage_gb_seconds
+                    
+            except KeyError as e:
+                raise ValueError(f"Missing required key in pipeline prediction for Lambda mapping: {e}")
+            
+            # Calculate total pipeline processing time
+            total_pipeline_time = sum(pipeline_times)
+            
+            # Calculate shuffle time, GB-seconds, and S3 access counts (inter-pipeline data transfer)
+            shuffle_time = 0.0
+            shuffle_gb_seconds = 0.0
+            total_s3_reads = 0  # Total S3 read requests
+            total_s3_writes = 0  # Total S3 write requests
+            
+            if pipeline_data and len(pipeline_data) > 1:  # Only multi-pipeline queries need shuffle
+                # Shuffle configuration parameters
+                shuffle_write_instances = 100  # Number of write instances
+                shuffle_read_instances = 100   # Number of read instances
+                shuffle_io_speed_mbps = 75     # IO speed per instance in MB/s
+                
+                # Estimate data volume for each shuffle
+                for i in range(len(pipeline_data) - 1):  # Adjacent pipelines need shuffle
+                    pipeline_info = pipeline_data[i]
+                    
+                    # Get actual operator information from pipeline to estimate data volume
+                    operators = pipeline_info.get('operators', [])
+                    
+                    # Calculate estimated cardinality and data size for pipeline output
+                    # Use the cardinality of the last operator in pipeline as output cardinality
+                    estimated_cardinality = 1000  # Default value
+                    total_data_size = 0
+                    
+                    for op in operators:
+                        if 'cardinality' in op:
+                            estimated_cardinality = max(estimated_cardinality, op['cardinality'])
+                        if 'data_size' in op:
+                            total_data_size += op.get('data_size', 0)
+                    
+                    # Use total data size if available; otherwise estimate from cardinality
+                    if total_data_size > 0:
+                        shuffle_data_size_bytes = total_data_size
+                    else:
+                        # Estimate: cardinality × average row size (assume 64 bytes per row)
+                        avg_row_size = 64  # bytes per row
+                        shuffle_data_size_bytes = estimated_cardinality * avg_row_size
+                    
+                    shuffle_data_size_mb = shuffle_data_size_bytes / (1024 * 1024)  # Convert to MB
+                    
+                    # Calculate shuffle time = write time + read time
+                    # Write time = data volume / (write instances × IO speed per instance)
+                    write_time = shuffle_data_size_mb / (shuffle_write_instances * shuffle_io_speed_mbps)
+                    
+                    # Read time = data volume / (read instances × IO speed per instance)
+                    read_time = shuffle_data_size_mb / (shuffle_read_instances * shuffle_io_speed_mbps)
+                    
+                    # Single shuffle time
+                    single_shuffle_time = write_time + read_time
+                    shuffle_time += single_shuffle_time
+                    
+                    # Single shuffle GB-seconds: shuffle time × memory × instances
+                    single_shuffle_gb_seconds = single_shuffle_time * lambda_memory_gb * lambda_instance_count
+                    shuffle_gb_seconds += single_shuffle_gb_seconds
+                    
+                    # Calculate S3 access count: N1 * N2 reads and writes
+                    # N1 = instances of previous pipeline, N2 = instances of next pipeline
+                    # Currently simplified to 100 instances each
+                    n1_instances = lambda_instance_count  # Previous pipeline instances
+                    n2_instances = lambda_instance_count  # Next pipeline instances
+                    
+                    shuffle_s3_writes = n1_instances * n2_instances  # Write request count
+                    shuffle_s3_reads = n1_instances * n2_instances   # Read request count
+                    
+                    total_s3_writes += shuffle_s3_writes
+                    total_s3_reads += shuffle_s3_reads
+                    
+                    # Debug information
+                    print(f"    Shuffle {i+1}: {shuffle_data_size_mb:.2f}MB, write: {write_time:.4f}s, read: {read_time:.4f}s, total: {single_shuffle_time:.4f}s")
+                    print(f"      GB-s: {single_shuffle_gb_seconds:.6f}, S3 writes: {shuffle_s3_writes}, S3 reads: {shuffle_s3_reads}")
+            
+            # Return total time, total GB-seconds, and S3 access counts
+            total_lambda_time = total_pipeline_time + shuffle_time
+            total_lambda_gb_seconds = total_gb_seconds + shuffle_gb_seconds
+            
+            print(f"    Lambda total: pipeline={total_pipeline_time:.4f}s + shuffle={shuffle_time:.4f}s = {total_lambda_time:.4f}s")
+            print(f"    Lambda GB-seconds: pipeline={total_gb_seconds:.6f} + shuffle={shuffle_gb_seconds:.6f} = {total_lambda_gb_seconds:.6f}")
+            print(f"    S3 access: {total_s3_writes} writes + {total_s3_reads} reads")
+            
+            return total_lambda_time, total_lambda_gb_seconds, total_s3_writes, total_s3_reads
             
         elif service_type == ServiceType.ATHENA:
             # Athena time: use specialized time prediction model
@@ -267,7 +394,7 @@ class Router:
                 
                 return total_duration
     
-    def _estimate_execution_cost(self, service_type: ServiceType, predictions: List[Dict[str, float]], pipeline_data: List[Dict] = None, athena_scan_info: Dict = None) -> float:
+    def _estimate_execution_cost(self, service_type: ServiceType, predictions: List[Dict[str, float]], pipeline_data: List[Dict] = None, athena_scan_info: Dict = None, lambda_gb_seconds: float = None, s3_writes: int = 0, s3_reads: int = 0) -> float:
         """
         Estimate total execution cost for this service
         
@@ -312,23 +439,31 @@ class Router:
             return execution_time * cost_per_second * max_resource_ratio
             
         elif service_type == ServiceType.LAMBDA:
-            # Lambda: cost = time × unit_price × memory_gb × instance_count
-            # Unit price is in $/GB-second, so: time × $/GB-second × GB × instances = total cost
-            # Simplified version with hardcoded values (4GB memory, 100 instances)
-            try:
-                total_duration = sum(pred['duration'] for pred in predictions)
-            except KeyError as e:
-                raise ValueError(f"Missing 'duration' key in pipeline prediction: {e}")
+            # Lambda: cost = lambda_gb_seconds × unit_price + S3_access_cost
+            # Cost has two parts: 1) Lambda execution cost, 2) S3 access cost
             
-            # Cost formula: time × cost_per_gb_second × 4GB × 100 instances
-            memory_gb = 4  # Simplified: 4GB memory allocation
-            instance_count = 100  # Simplified: 100 concurrent instances
-            cost = (total_duration * 
-                   self.params.LAMBDA_COST_PER_SECOND * 
-                   memory_gb * 
-                   instance_count)
+            if lambda_gb_seconds is None:
+                # This should never happen for Lambda - indicates a bug in time estimation
+                raise ValueError("Lambda GB-seconds not provided - this indicates a bug in _estimate_execution_time for Lambda")
             
-            return cost
+            # Part 1: Lambda execution cost (GB-seconds × unit price)
+            lambda_execution_cost = lambda_gb_seconds * self.params.LAMBDA_COST_PER_SECOND
+            
+            # Part 2: S3 access cost (reads + writes)
+            s3_read_cost = (s3_reads / 1000.0) * self.params.S3_READ_COST_PER_1000_REQUESTS
+            s3_write_cost = (s3_writes / 1000.0) * self.params.S3_WRITE_COST_PER_1000_REQUESTS
+            s3_total_cost = s3_read_cost + s3_write_cost
+            
+            # Total cost
+            total_cost = lambda_execution_cost + s3_total_cost
+            
+            print(f"    Lambda cost breakdown:")
+            print(f"      Execution: {lambda_gb_seconds:.6f} GB-s × {self.params.LAMBDA_COST_PER_SECOND} = ${lambda_execution_cost:.6f}")
+            print(f"      S3 reads: {s3_reads} × ${self.params.S3_READ_COST_PER_1000_REQUESTS}/1000 = ${s3_read_cost:.6f}")
+            print(f"      S3 writes: {s3_writes} × ${self.params.S3_WRITE_COST_PER_1000_REQUESTS}/1000 = ${s3_write_cost:.6f}")
+            print(f"      Total: ${lambda_execution_cost:.6f} + ${s3_total_cost:.6f} = ${total_cost:.6f}")
+            
+            return total_cost
             
         elif service_type == ServiceType.ATHENA:
             # Athena: cost based on data scanned (TB * $5/TB)
