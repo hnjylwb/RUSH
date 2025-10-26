@@ -1,0 +1,21 @@
+id,name,department,salary,age,hire_date
+1,John Smith,Engineering,85000,28,2021-03-15
+2,Sarah Johnson,Marketing,72000,32,2020-07-22
+3,Mike Brown,Engineering,92000,35,2019-11-08
+4,Lisa Davis,Sales,68000,29,2022-01-10
+5,David Wilson,Engineering,78000,26,2022-08-30
+6,Emily Chen,Marketing,75000,31,2021-05-18
+7,Robert Taylor,Sales,71000,33,2020-12-03
+8,Amanda White,Engineering,88000,27,2021-09-14
+9,Chris Lee,Marketing,69000,30,2022-04-25
+10,Jessica Garcia,Sales,73000,28,2021-12-01
+11,Michael Rodriguez,Engineering,95000,36,2018-06-12
+12,Jennifer Martinez,Marketing,77000,34,2020-02-28
+13,William Anderson,Sales,70000,31,2021-08-16
+14,Elizabeth Thomas,Engineering,82000,29,2022-03-07
+15,James Jackson,Marketing,74000,32,2020-10-19
+16,Maria Gonzalez,Sales,69500,27,2022-06-08
+17,Charles Miller,Engineering,90000,33,2019-04-02
+18,Patricia Wilson,Marketing,76000,30,2021-11-25
+19,Thomas Moore,Sales,72500,29,2022-02-14
+20,Linda Taylor,Engineering,87000,31,2020-09-11
