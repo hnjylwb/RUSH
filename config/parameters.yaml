@@ -1,0 +1,13 @@
+# System parameters
+
+router:
+  cost_weight: 1.0  # α in scoring function
+  load_weights:
+    vm: 0.05
+    faas: 0.1
+    qaas: 0.15
+
+inter_scheduler:
+  wait_time_threshold: 1.0    # seconds
+  migration_cooldown: 5.0     # seconds
+  max_migrations: 3

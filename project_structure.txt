@@ -1,0 +1,45 @@
+ease/                           # 主代码目录（名字无关紧要）
+├── core/
+│   ├── __init__.py
+│   ├── query.py               # Query 数据模型
+│   ├── service.py             # Service 相关定义（类型、配置等）
+│   └── result.py              # 执行结果模型
+│
+├── executors/
+│   ├── __init__.py
+│   ├── base.py                # BaseExecutor 抽象类
+│   ├── vm.py                  # VM Executor
+│   ├── faas.py                # FaaS Executor
+│   └── qaas.py                # QaaS Executor
+│
+├── router/
+│   ├── __init__.py
+│   ├── router.py              # Router 主类
+│   ├── models/                # Router 使用的模型
+│   │   ├── __init__.py
+│   │   ├── cost_model.py      # Cost 模型
+│   │   ├── performance_model.py  # Performance 模型
+│   │   └── resource_model.py  # Resource 需求模型
+│   └── query_analyzer.py      # 查询分析（解析SQL等）
+│
+├── scheduler/
+│   ├── __init__.py
+│   ├── intra.py               # Intra-Scheduler
+│   └── inter.py               # Inter-Scheduler
+│
+├── config/
+│   ├── __init__.py
+│   ├── config.py              # 统一配置管理
+│   └── defaults.py            # 默认配置值
+│
+└── system.py                  # 系统主类，协调所有模块
+
+config/                         # 配置文件目录
+├── services.yaml              # 服务配置
+└── parameters.yaml            # 参数配置
+
+data/                          # 数据目录
+└── query_resources.csv        # 查询资源需求
+
+demo.py                        # 演示脚本
+requirements.txt
