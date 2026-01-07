@@ -1,97 +1,62 @@
 # Query Scheduling System
 
-跨异构云服务的查询调度系统
+Cross-cloud heterogeneous query scheduling system
 
-## 架构
+## Quick Start
 
-```
-┌─────────────────────────────────────────┐
-│            System                       │
-│  ┌────────┐  ┌─────────────────────┐   │
-│  │ Router │→ │ Intra-Scheduler     │   │
-│  └────────┘  │ Inter-Scheduler     │   │
-│              └─────────────────────┘   │
-└─────────────────────────────────────────┘
-         ↓             ↓            ↓
-    ┌─────┐       ┌──────┐     ┌──────┐
-    │ VM  │       │ FaaS │     │ QaaS │
-    └─────┘       └──────┘     └──────┘
-```
-
-## 核心组件
-
-### 1. Executors (执行器)
-- **VM**: Virtual Machine (e.g., EC2)
-- **FaaS**: Function as a Service (e.g., Lambda)
-- **QaaS**: Query as a Service (e.g., Athena)
-
-### 2. Router (路由器)
-包含三个模型:
-- **Resource Model**: 估算查询资源需求
-- **Performance Model**: 估算执行时间
-- **Cost Model**: 估算金钱成本
-
-### 3. Schedulers (调度器)
-- **Intra-Scheduler**: 服务内调度
-- **Inter-Scheduler**: 跨服务迁移
-
-## 快速开始
-
-```python
-from ease import System, Query, QueryType
-
-# 初始化系统
-system = System(
-    config_dir="config",
-    resource_csv="data/query_resources.csv"
-)
-
-# 创建查询
-query = Query(
-    query_id="Q1",
-    sql="SELECT * FROM users WHERE age > 25",
-    query_type=QueryType.OLTP
-)
-
-# 提交查询
-await system.submit_query(query)
-```
-
-## 运行演示
+### 1. Install Dependencies
 
 ```bash
-python demo.py
+pip install -r requirements.txt
 ```
 
-## 目录结构
+### 2. Start Server
 
-```
-ease/                   # 主代码
-├── core/              # 核心数据模型
-├── executors/         # VM/FaaS/QaaS执行器
-├── router/            # 路由器 + 模型
-├── scheduler/         # 调度器
-└── config/            # 配置管理
-
-config/                # 配置文件
-├── services.yaml
-└── parameters.yaml
-
-data/                  # 数据
-└── query_resources.csv
+```bash
+python run_server.py
 ```
 
-## 路由策略
+Optional arguments:
+- `--host`: Server host address (default: 0.0.0.0)
+- `--port`: Server port (default: 8080)
+- `--config`: Configuration directory (default: config)
+- `--resources`: CSV file with query resource requirements
 
-评分公式:
+### 3. Submit Queries
+
+List available queries:
+```bash
+python run_client.py tpch
+python run_client.py ssb
+python run_client.py clickbench
 ```
-score = time × cost^α × (1 + β × queue_size)
+
+Submit specific queries:
+```bash
+python run_client.py tpch 1 2 3
+python run_client.py ssb 1.1 2.1 3.1
 ```
 
-选择评分最低的服务。
+Optional arguments:
+- `--server`: Server URL (default: http://localhost:8080)
+- `--client-id`: Client identifier
 
-## 配置
+## Directory Structure
 
-在 `config/` 目录下修改:
-- `services.yaml`: 服务配置
-- `parameters.yaml`: 参数配置
+```
+├── run_server.py          # Server startup script
+├── run_client.py          # Client startup script
+├── ease/                  # Core library
+│   ├── server.py          # Server implementation
+│   ├── client.py          # Client implementation
+│   ├── core/              # Data models
+│   ├── executors/         # Executors (VM/FaaS/QaaS)
+│   ├── router/            # Router with cost models
+│   ├── scheduler/         # Schedulers
+│   └── config/            # Configuration management
+├── config/                # Configuration files
+└── queries/               # Query files
+    ├── tpch/              # TPC-H queries
+    ├── ssb/               # SSB queries
+    └── clickbench/        # ClickBench queries
+```
