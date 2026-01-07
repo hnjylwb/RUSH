@@ -1,26 +1,40 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from ..models.query import Query, ServiceType
 from .query_parser import QueryParser
 from .pipeline_splitter import PipelineSplitter
 from .pipeline_encoder import PipelineEncoder
 from .resource_predictor import ResourcePredictor
+from .resource_provider import ResourceProvider
 
 class Router:
     """
     Main router that coordinates the entire routing pipeline
+
+    Supports flexible resource input: CSV优先 → ML预测回退
     """
-    
-    def __init__(self):
+
+    def __init__(self, resource_csv_path: Optional[str] = None):
+        """
+        Args:
+            resource_csv_path: CSV文件路径，包含查询资源需求 (可选)
+                             格式: query_id,cpu_time,data_scanned,scale_factor
+        """
         # Initialize all components
         self.query_parser = QueryParser()
         self.pipeline_splitter = PipelineSplitter()
         self.pipeline_encoder = PipelineEncoder()
         self.resource_predictor = ResourcePredictor()
-        
+
+        # Initialize resource provider (CSV优先 → ML回退)
+        self.resource_provider = ResourceProvider(
+            csv_path=resource_csv_path,
+            use_ml_fallback=True
+        )
+
         # Load service parameters from config
         from ..config.parameters import RUSHParameters
         self.params = RUSHParameters()
-        
+
         # Initialize Athena time predictor
         from .athena_time_predictor import AthenaTimePredictor
         self.athena_time_predictor = AthenaTimePredictor()
