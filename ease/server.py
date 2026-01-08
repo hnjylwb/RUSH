@@ -4,9 +4,8 @@ Query scheduling server with HTTP API
 
 import asyncio
 import uuid
-import json
 from typing import Dict, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime
 
 from .core import Query, ServiceType, ServiceConfig, ExecutionResult, ExecutionStatus
@@ -63,8 +62,7 @@ class SchedulingServer:
         }
         self.router = Router(
             config=self.config,
-            service_configs=service_configs,
-            resource_csv=None  # Resources now provided by clients
+            service_configs=service_configs
         )
         # Convert executors dict to format expected by IntraScheduler
         executors_for_scheduler = {
@@ -403,8 +401,8 @@ class SchedulingServer:
 
         # Update query with routing decision
         query.routing_decision = decision.selected_service.value
-        query.estimated_cost = decision.estimated_cost
-        query.estimated_time = decision.estimated_time
+        query.estimated_cost = decision.estimates[decision.selected_service]['cost']
+        query.estimated_time = decision.estimates[decision.selected_service]['time']
 
         # Create task
         task = QueryTask(
@@ -431,18 +429,22 @@ class SchedulingServer:
         """Background task: process scheduled queries"""
         while self.running:
             try:
-                # Check if there are queries to schedule
-                for service_type in self.executors.keys():
-                    if self.intra_scheduler.get_queue_size(service_type) > 0:
-                        # Get next query from queue
-                        queries = self.intra_scheduler.schedule(service_type, batch_size=1)
-                        if queries:
-                            query = queries[0]
-                            # Execute query (simplified for now)
-                            executor = self.executors[service_type]
-                            print(f"[Scheduler] Executing {query.query_id} on {service_type.value}...")
-                            # In real implementation, this would be async execution
-                            # result = await executor.execute(query)
+                # Schedule and execute queries for all service types
+                results = await self.intra_scheduler.schedule_and_execute_all()
+
+                # Update task statuses based on results
+                for service_results in results.values():
+                    for result in service_results:
+                        # Find the task for this query
+                        for task in self.tasks.values():
+                            if task.query.query_id == result.query_id:
+                                task.status = result.status
+                                task.result = result
+
+                                status_str = "✓" if result.status == ExecutionStatus.SUCCESS else "✗"
+                                print(f"[Scheduler] {status_str} Query {result.query_id} on {result.service_used} "
+                                      f"(time: {result.execution_time:.2f}s, cost: ${result.cost:.4f})")
+                                break
 
                 await asyncio.sleep(0.1)  # Avoid busy waiting
             except Exception as e:

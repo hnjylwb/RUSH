@@ -5,6 +5,7 @@ Resource-aware scheduling within each service type.
 Implements Algorithm 1 from the paper.
 """
 
+import asyncio
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -316,19 +317,103 @@ class IntraScheduler:
         # Line 10: return S
         return scheduled
 
-    async def schedule_all(self) -> Dict[ServiceType, List[Tuple[Query, str]]]:
+    async def schedule_and_execute(self, service_type: ServiceType) -> List[ExecutionResult]:
         """
-        Schedule queries for all service types
+        Schedule and execute queries for a specific service type
+
+        This is the main entry point that:
+        1. Runs the scheduling algorithm (Algorithm 1)
+        2. Submits scheduled queries to executors
+        3. Collects execution results
+        4. Releases resources immediately after each query completes
+
+        Args:
+            service_type: Service type to schedule and execute
 
         Returns:
-            Dictionary mapping service types to list of (query, executor_id) tuples
+            List of ExecutionResult from completed queries
+        """
+        # Step 1: Run scheduling algorithm
+        scheduled = await self.schedule_service(service_type)
+
+        if not scheduled:
+            return []
+
+        # Step 2: Submit queries to executors and execute
+        # Each query will release resources immediately upon completion
+        execution_tasks = []
+        for query, executor_id in scheduled:
+            state = self.executor_states[executor_id]
+            # Submit query and wrap with resource release
+            task = self._execute_and_release(query, executor_id, state)
+            execution_tasks.append(task)
+
+        # Step 3: Wait for all queries to complete
+        results = await asyncio.gather(*execution_tasks)
+
+        return results
+
+    async def _execute_query(self, query: Query, state: ExecutorState) -> ExecutionResult:
+        """
+        Execute a single query on an executor
+
+        Args:
+            query: Query to execute
+            state: Executor state
+
+        Returns:
+            ExecutionResult
+        """
+        try:
+            # Execute query on the executor
+            result = await state.executor.execute(query)
+            return result
+        except Exception as e:
+            # Handle execution errors
+            from ..core import ExecutionStatus
+            return ExecutionResult(
+                query_id=query.query_id,
+                service_used=state.executor_id,
+                status=ExecutionStatus.FAILED,
+                execution_time=0.0,
+                cost=0.0,
+                error=f"Execution failed: {str(e)}"
+            )
+
+    async def _execute_and_release(self, query: Query, executor_id: str,
+                                   state: ExecutorState) -> ExecutionResult:
+        """
+        Execute a query and immediately release resources upon completion
+
+        Args:
+            query: Query to execute
+            executor_id: Executor ID
+            state: Executor state
+
+        Returns:
+            ExecutionResult
+        """
+        try:
+            # Execute query
+            result = await self._execute_query(query, state)
+            return result
+        finally:
+            # Always release resources, even if execution failed
+            self.release_query(query, executor_id)
+
+    async def schedule_and_execute_all(self) -> Dict[ServiceType, List[ExecutionResult]]:
+        """
+        Schedule and execute queries for all service types
+
+        Returns:
+            Dictionary mapping service types to execution results
         """
         results = {}
 
         for service_type in self.queues.keys():
-            scheduled = await self.schedule_service(service_type)
-            if scheduled:
-                results[service_type] = scheduled
+            service_results = await self.schedule_and_execute(service_type)
+            if service_results:
+                results[service_type] = service_results
 
         return results
 
