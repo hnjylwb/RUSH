@@ -80,8 +80,8 @@ class SchedulingServer:
         self.tasks: Dict[str, QueryTask] = {}
 
         # Background tasks
-        self.scheduler_task = None
-        self.monitor_task = None
+        self.intra_scheduler_task = None
+        self.inter_scheduler_task = None
 
     def _init_executors(self):
         """Initialize executors from configuration"""
@@ -332,8 +332,8 @@ class SchedulingServer:
         print()
 
         # Start background tasks
-        self.scheduler_task = asyncio.create_task(self._run_scheduler())
-        self.monitor_task = asyncio.create_task(self._run_monitor())
+        self.intra_scheduler_task = asyncio.create_task(self._run_intra_scheduler())
+        self.inter_scheduler_task = asyncio.create_task(self._run_inter_scheduler())
 
         # Start HTTP server if available
         if has_http:
@@ -367,10 +367,10 @@ class SchedulingServer:
         self.running = False
 
         # Cancel background tasks
-        if self.scheduler_task:
-            self.scheduler_task.cancel()
-        if self.monitor_task:
-            self.monitor_task.cancel()
+        if self.intra_scheduler_task:
+            self.intra_scheduler_task.cancel()
+        if self.inter_scheduler_task:
+            self.inter_scheduler_task.cancel()
 
         # Stop HTTP server
         if self.runner:
@@ -425,8 +425,8 @@ class SchedulingServer:
         """Get status of a submitted task"""
         return self.tasks.get(task_id)
 
-    async def _run_scheduler(self):
-        """Background task: process scheduled queries"""
+    async def _run_intra_scheduler(self):
+        """Background task: run intra-service scheduler"""
         while self.running:
             try:
                 # Schedule and execute queries for all service types
@@ -442,23 +442,23 @@ class SchedulingServer:
                                 task.result = result
 
                                 status_str = "✓" if result.status == ExecutionStatus.SUCCESS else "✗"
-                                print(f"[Scheduler] {status_str} Query {result.query_id} on {result.service_used} "
+                                print(f"[IntraScheduler] {status_str} Query {result.query_id} on {result.service_used} "
                                       f"(time: {result.execution_time:.2f}s, cost: ${result.cost:.4f})")
                                 break
 
                 await asyncio.sleep(0.1)  # Avoid busy waiting
             except Exception as e:
-                print(f"[Scheduler] Error: {e}")
+                print(f"[IntraScheduler] Error: {e}")
 
-    async def _run_monitor(self):
-        """Background task: monitor and optimize scheduling"""
+    async def _run_inter_scheduler(self):
+        """Background task: run inter-service scheduler"""
         while self.running:
             try:
                 # Run inter-scheduler to check for migrations
                 await self.inter_scheduler.check_and_migrate()
                 await asyncio.sleep(1.0)  # Check every second
             except Exception as e:
-                print(f"[Monitor] Error: {e}")
+                print(f"[InterScheduler] Error: {e}")
 
     def get_status(self) -> Dict:
         """Get server status"""
