@@ -3,7 +3,7 @@ Cost model - 估算查询在不同服务上的金钱成本
 """
 
 from typing import Dict
-from .resource_model import ResourceRequirements
+from ...core import ResourceRequirements
 
 
 class CostModel:

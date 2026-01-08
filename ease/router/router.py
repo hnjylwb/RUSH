@@ -3,8 +3,8 @@ Router - 查询路由决策
 """
 
 from typing import Dict, List, Optional
-from ..core import Query, ServiceType
-from .models import ResourceModel, PerformanceModel, CostModel
+from ..core import Query, ServiceType, ResourceRequirements
+from .models import PerformanceModel, CostModel
 
 
 class RoutingDecision:
@@ -23,36 +23,33 @@ class Router:
     Router
 
     Responsibilities:
-    1. Estimate query resource requirements
+    1. Validate query resource requirements (provided by client)
     2. Estimate execution time/cost on each service
     3. Select the best service based on scoring function
     """
 
     def __init__(self, config: Dict = None,
-                 service_configs: Dict[ServiceType, Dict] = None,
-                 resource_csv: Optional[str] = None):
+                 service_configs: Dict[ServiceType, Dict] = None):
         """
         Initialize router
 
         Args:
             config: Router configuration
             service_configs: Configuration for each service type
-            resource_csv: Path to CSV with query resource requirements
         """
         self.config = config or {}
         self.service_configs = service_configs or {}
 
         # Initialize models
-        self.resource_model = ResourceModel(csv_path=resource_csv)
         self.performance_model = PerformanceModel(config=self.config.get('performance', {}))
         self.cost_model = CostModel(config=self.config.get('cost', {}))
 
         # Scoring parameters
         self.cost_weight = self.config.get('cost_weight', 1.0)        # α
         self.load_weights = self.config.get('load_weights', {         # β for each service
-            ServiceType.VM: 0.05,
-            ServiceType.FAAS: 0.1,
-            ServiceType.QAAS: 0.15
+            ServiceType.VM: 0.1,
+            ServiceType.FAAS: 0.05,
+            ServiceType.QAAS: 0.02
         })
 
     def route(self, query: Query, queue_sizes: Optional[Dict[ServiceType, int]] = None) -> RoutingDecision:
@@ -60,7 +57,7 @@ class Router:
         Route query to best service
 
         Args:
-            query: Query to route
+            query: Query to route (must have resource_requirements set)
             queue_sizes: Current queue sizes for each service
 
         Returns:
@@ -69,15 +66,19 @@ class Router:
         if queue_sizes is None:
             queue_sizes = {}
 
-        # Step 1: Estimate resource requirements
-        resources = self.resource_model.estimate(
-            query.query_id,
-            query.sql,
-            provided_resources=query.resource_requirements
-        )
-        query.resource_requirements = resources.to_dict()
+        # Check resource requirements are provided
+        if not query.resource_requirements:
+            raise ValueError(f"Query {query.query_id} missing resource_requirements. "
+                           "Client must provide resource requirements in JSON format.")
 
-        # Step 2: Estimate time and cost for each service
+        # Convert to ResourceRequirements object for models
+        resources = ResourceRequirements(
+            cpu_time=query.resource_requirements.get('cpu_time', 0),
+            data_scanned=query.resource_requirements.get('data_scanned', 0),
+            scale_factor=query.resource_requirements.get('scale_factor', 50.0)
+        )
+
+        # Estimate time and cost for each service
         estimates = {}
         scores = {}
 
@@ -109,7 +110,7 @@ class Router:
             score = self._calculate_score(perf.execution_time, cost, queue_size, load_weight)
             scores[service_type] = score
 
-        # Step 3: Select service with lowest score
+        # Select service with lowest score
         best_service = min(scores, key=scores.get)
 
         # Update query

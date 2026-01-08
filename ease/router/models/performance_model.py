@@ -4,7 +4,7 @@ Performance model - 估算查询在不同服务上的执行时间
 
 from typing import Dict
 from dataclasses import dataclass
-from .resource_model import ResourceRequirements
+from ...core import ResourceRequirements
 
 
 @dataclass
