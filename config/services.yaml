@@ -17,6 +17,7 @@ services:
 
   faas:
     - name: "faas-cluster-1"
+      endpoint: "<LAMBDA_FUNCTION_URL>"  # e.g., "https://abc123.lambda-url.us-east-1.on.aws/"
       num_instances: 100
       memory_per_instance_gb: 4
       cpu_per_instance: 1.2
