@@ -35,14 +35,13 @@ class SchedulingServer:
     Manages executors, routes queries, and schedules execution
     """
 
-    def __init__(self, config_dir: str = "config", resource_csv: str = None,
+    def __init__(self, config_dir: str = "config",
                  host: str = "0.0.0.0", port: int = 8080):
         """
         Initialize scheduling server
 
         Args:
             config_dir: Configuration directory
-            resource_csv: Optional CSV file with query resource requirements
             host: Server host address
             port: Server port
         """
@@ -61,7 +60,7 @@ class SchedulingServer:
         self.router = Router(
             services=self.executors,
             config=self.config,
-            resource_csv=resource_csv
+            resource_csv=None  # Resources now provided by clients
         )
         self.intra_scheduler = IntraScheduler()
         self.inter_scheduler = InterScheduler(
@@ -119,6 +118,11 @@ class SchedulingServer:
                         sql=data['sql'],
                         query_type=QueryType[data.get('query_type', 'OLAP')]
                     )
+
+                    # Add resource requirements if provided by client
+                    if 'resource_requirements' in data:
+                        query.resource_requirements = data['resource_requirements']
+
                     client_id = data.get('client_id', 'unknown')
 
                     # Submit query

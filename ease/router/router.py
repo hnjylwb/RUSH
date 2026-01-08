@@ -70,7 +70,11 @@ class Router:
             queue_sizes = {}
 
         # Step 1: Estimate resource requirements
-        resources = self.resource_model.estimate(query.query_id, query.sql)
+        resources = self.resource_model.estimate(
+            query.query_id,
+            query.sql,
+            provided_resources=query.resource_requirements
+        )
         query.resource_requirements = resources.to_dict()
 
         # Step 2: Estimate time and cost for each service

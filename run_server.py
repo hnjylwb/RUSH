@@ -12,8 +12,6 @@ async def main():
     parser = argparse.ArgumentParser(description="Query Scheduling Server")
     parser.add_argument('--config', default='config',
                        help='Configuration directory (default: config)')
-    parser.add_argument('--resources', default=None,
-                       help='CSV file with query resource requirements')
     parser.add_argument('--host', default='0.0.0.0',
                        help='Server host (default: 0.0.0.0)')
     parser.add_argument('--port', type=int, default=8080,
@@ -24,7 +22,6 @@ async def main():
     # Create and start server
     server = SchedulingServer(
         config_dir=args.config,
-        resource_csv=args.resources,
         host=args.host,
         port=args.port
     )

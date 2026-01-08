@@ -20,7 +20,6 @@ Optional arguments:
 - `--host`: Server host address (default: 0.0.0.0)
 - `--port`: Server port (default: 8080)
 - `--config`: Configuration directory (default: config)
-- `--resources`: CSV file with query resource requirements
 
 ### 3. Submit Queries
 
@@ -40,6 +39,7 @@ python run_client.py ssb 1.1 2.1 3.1
 Optional arguments:
 - `--server`: Server URL (default: http://localhost:8080)
 - `--client-id`: Client identifier
+- `--resources`: CSV file with query resource requirements (optional)
 
 ## Directory Structure
 

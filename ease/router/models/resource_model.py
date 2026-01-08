@@ -64,30 +64,41 @@ class ResourceModel:
         except Exception as e:
             print(f"Warning: Failed to load CSV: {e}")
 
-    def estimate(self, query_id: str, sql: str) -> ResourceRequirements:
+    def estimate(self, query_id: str, sql: str,
+                 provided_resources: Optional[Dict[str, float]] = None) -> ResourceRequirements:
         """
         Estimate resource requirements
 
         Strategy:
-        1. Check CSV first
-        2. Use ML model if available
-        3. Fall back to heuristics
+        1. Use client-provided resources if available
+        2. Check CSV
+        3. Use ML model if available
+        4. Fall back to heuristics
 
         Args:
             query_id: Query identifier
             sql: SQL string
+            provided_resources: Optional resource requirements provided by client
 
         Returns:
             ResourceRequirements object
         """
-        # Strategy 1: CSV lookup
+        # Strategy 1: Use client-provided resources
+        if provided_resources:
+            return ResourceRequirements(
+                cpu_time=provided_resources.get('cpu_time', 0),
+                data_scanned=provided_resources.get('data_scanned', 0),
+                scale_factor=provided_resources.get('scale_factor', 50.0)
+            )
+
+        # Strategy 2: CSV lookup
         if query_id in self.csv_resources:
             return self.csv_resources[query_id]
 
-        # Strategy 2: ML model (TODO: implement)
+        # Strategy 3: ML model (TODO: implement)
         # requirements = self._ml_predict(sql)
 
-        # Strategy 3: Heuristics
+        # Strategy 4: Heuristics
         return self._heuristic_estimate(sql)
 
     def _heuristic_estimate(self, sql: str) -> ResourceRequirements:

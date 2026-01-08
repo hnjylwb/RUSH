@@ -18,6 +18,8 @@ async def main():
                        help='Server URL (default: http://localhost:8080)')
     parser.add_argument('--client-id', default=None,
                        help='Client identifier (auto-generated if not provided)')
+    parser.add_argument('--resources', default=None,
+                       help='CSV file with query resource requirements')
 
     args = parser.parse_args()
 
@@ -26,7 +28,11 @@ async def main():
     print("=" * 80)
 
     # Create client
-    client = SchedulingClient(server_url=args.server, client_id=args.client_id)
+    client = SchedulingClient(
+        server_url=args.server,
+        client_id=args.client_id,
+        resource_file=args.resources
+    )
     print(f"\nClient ID: {client.client_id}")
     print(f"Server: {args.server}")
 

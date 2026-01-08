@@ -3,8 +3,9 @@ Query scheduling client with HTTP API support
 """
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 import uuid
+import csv
 
 from .core import Query, QueryType
 
@@ -16,17 +17,25 @@ class SchedulingClient:
     Can load queries from files and submit them to the server
     """
 
-    def __init__(self, server_url: str = "http://localhost:8080", client_id: Optional[str] = None):
+    def __init__(self, server_url: str = "http://localhost:8080",
+                 client_id: Optional[str] = None,
+                 resource_file: Optional[str] = None):
         """
         Initialize client
 
         Args:
             server_url: Server URL (e.g., http://localhost:8080)
             client_id: Optional client identifier (auto-generated if not provided)
+            resource_file: Optional CSV file with query resource requirements
         """
         self.server_url = server_url.rstrip('/')
         self.client_id = client_id or str(uuid.uuid4())[:8]
         self.submitted_tasks: List[str] = []
+        self.resources: Dict[str, Dict[str, float]] = {}
+
+        # Load resource file if provided
+        if resource_file:
+            self.load_resources(resource_file)
 
     def load_queries_from_benchmark(self, benchmark: str) -> List[Query]:
         """
@@ -80,6 +89,30 @@ class SchedulingClient:
             query_type=QueryType.OLAP
         )]
 
+    def load_resources(self, resource_file: str):
+        """
+        Load query resource requirements from CSV file
+
+        Args:
+            resource_file: Path to CSV file with columns: query_id, cpu_time, data_scanned, scale_factor
+        """
+        path = Path(resource_file)
+        if not path.exists():
+            print(f"Warning: Resource file not found: {resource_file}")
+            return
+
+        with open(path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                query_id = row['query_id']
+                self.resources[query_id] = {
+                    'cpu_time': float(row.get('cpu_time', 0)),
+                    'data_scanned': float(row.get('data_scanned', 0)),
+                    'scale_factor': float(row.get('scale_factor', 1.0))
+                }
+
+        print(f"Loaded resource requirements for {len(self.resources)} queries")
+
     async def submit_query(self, query: Query) -> str:
         """
         Submit a single query to the server
@@ -99,6 +132,10 @@ class SchedulingClient:
             'query_type': query.query_type.value,
             'client_id': self.client_id
         }
+
+        # Add resource requirements if available
+        if query.query_id in self.resources:
+            payload['resource_requirements'] = self.resources[query.query_id]
 
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as response:
