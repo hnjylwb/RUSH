@@ -51,13 +51,16 @@ class Router:
             ServiceType.QAAS: 0.02
         })
 
-    def route(self, query: Query, queue_sizes: Optional[Dict[ServiceType, int]] = None) -> RoutingDecision:
+    def route(self, query: Query, queue_sizes: Optional[Dict] = None) -> RoutingDecision:
         """
         Route query to best service
 
         Args:
             query: Query to route (must have resource_requirements set)
-            queue_sizes: Current queue sizes for each service
+            queue_sizes: Current queue sizes
+                - Can be Dict[ServiceType, int]: total queue size per service
+                - Or Dict[ServiceType, Dict[str, int]]: per-executor queue sizes
+                  (for VM auto-scaling, each VM instance tracked separately)
 
         Returns:
             RoutingDecision with selected service and estimates
@@ -101,7 +104,14 @@ class Router:
             }
 
             # Calculate score
-            queue_size = queue_sizes.get(service_type, 0)
+            # Get queue size (either total or average per-executor)
+            queue_size_info = queue_sizes.get(service_type, 0)
+            if isinstance(queue_size_info, dict):
+                # Per-executor queue sizes: use average or min
+                queue_size = sum(queue_size_info.values()) / len(queue_size_info) if queue_size_info else 0
+            else:
+                queue_size = queue_size_info
+
             load_weight = self.load_weights.get(service_type, 0.1)
             score = self._calculate_score(result.execution_time, result.cost, queue_size, load_weight)
             scores[service_type] = score
