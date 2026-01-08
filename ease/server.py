@@ -9,7 +9,7 @@ from typing import Dict, Optional
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
-from .core import Query, ServiceType, ExecutionResult, ExecutionStatus, QueryType
+from .core import Query, ServiceType, ExecutionResult, ExecutionStatus
 from .router import Router
 from .scheduler import IntraScheduler, InterScheduler
 from .executors import BaseExecutor, VMExecutor, FaaSExecutor, QaaSExecutor
@@ -115,13 +115,12 @@ class SchedulingServer:
                     # Parse query from request
                     query = Query(
                         query_id=data['query_id'],
-                        sql=data['sql'],
-                        query_type=QueryType[data.get('query_type', 'OLAP')]
+                        sql=data['sql']
                     )
 
-                    # Add resource requirements if provided by client
-                    if 'resource_requirements' in data:
-                        query.resource_requirements = data['resource_requirements']
+                    # Add resource profile if provided by client
+                    if 'resource_profile' in data:
+                        query.resource_requirements = data['resource_profile']
 
                     client_id = data.get('client_id', 'unknown')
 

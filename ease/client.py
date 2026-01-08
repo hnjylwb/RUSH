@@ -5,9 +5,9 @@ Query scheduling client with HTTP API support
 from pathlib import Path
 from typing import List, Optional, Dict
 import uuid
-import csv
+import json
 
-from .core import Query, QueryType
+from .core import Query
 
 
 class SchedulingClient:
@@ -19,30 +19,29 @@ class SchedulingClient:
 
     def __init__(self, server_url: str = "http://localhost:8080",
                  client_id: Optional[str] = None,
-                 resource_file: Optional[str] = None):
+                 resource_dir: Optional[str] = None):
         """
         Initialize client
 
         Args:
             server_url: Server URL (e.g., http://localhost:8080)
             client_id: Optional client identifier (auto-generated if not provided)
-            resource_file: Optional CSV file with query resource requirements
+            resource_dir: Optional directory containing query resource JSON files
         """
         self.server_url = server_url.rstrip('/')
         self.client_id = client_id or str(uuid.uuid4())[:8]
         self.submitted_tasks: List[str] = []
-        self.resources: Dict[str, Dict[str, float]] = {}
+        self.resource_dir = resource_dir
+        self.resources: Dict[str, Dict] = {}  # Cache loaded resources
 
-        # Load resource file if provided
-        if resource_file:
-            self.load_resources(resource_file)
-
-    def load_queries_from_benchmark(self, benchmark: str) -> List[Query]:
+    def load_queries_from_benchmark(self, benchmark: str, query_ids: Optional[List[str]] = None) -> List[Query]:
         """
         Load queries from benchmark directory
 
         Args:
             benchmark: Benchmark name (tpch, ssb, clickbench)
+            query_ids: Optional list of specific query IDs to load (e.g., ['1', '2', '3'])
+                      If None, load all queries
 
         Returns:
             List of Query objects
@@ -52,18 +51,56 @@ class SchedulingClient:
             raise ValueError(f"Benchmark '{benchmark}' not found in queries/")
 
         queries = []
-        for sql_file in sorted(query_dir.glob("*.sql")):
-            with open(sql_file, 'r') as f:
-                sql = f.read()
 
-            query_id = f"{benchmark}_{sql_file.stem}"
-            queries.append(Query(
-                query_id=query_id,
-                sql=sql,
-                query_type=QueryType.OLAP
-            ))
+        if query_ids:
+            # Load only specified queries
+            for query_id in query_ids:
+                sql_file = query_dir / f"{query_id}.sql"
+                if not sql_file.exists():
+                    print(f"Warning: Query file not found: {sql_file}")
+                    continue
+
+                with open(sql_file, 'r') as f:
+                    sql = f.read()
+
+                full_query_id = f"{benchmark}_{query_id}"
+                queries.append(Query(
+                    query_id=full_query_id,
+                    sql=sql
+                ))
+        else:
+            # Load all queries (for listing purposes)
+            for sql_file in sorted(query_dir.glob("*.sql")):
+                with open(sql_file, 'r') as f:
+                    sql = f.read()
+
+                query_id = f"{benchmark}_{sql_file.stem}"
+                queries.append(Query(
+                    query_id=query_id,
+                    sql=sql
+                ))
 
         return queries
+
+    def list_available_queries(self, benchmark: str) -> List[str]:
+        """
+        List available query IDs in a benchmark without loading SQL content
+
+        Args:
+            benchmark: Benchmark name (tpch, ssb, clickbench)
+
+        Returns:
+            List of query IDs
+        """
+        query_dir = Path("queries") / benchmark
+        if not query_dir.exists():
+            raise ValueError(f"Benchmark '{benchmark}' not found in queries/")
+
+        query_ids = []
+        for sql_file in sorted(query_dir.glob("*.sql")):
+            query_ids.append(sql_file.stem)
+
+        return query_ids
 
     def load_queries_from_file(self, file_path: str) -> List[Query]:
         """
@@ -85,33 +122,49 @@ class SchedulingClient:
         query_id = path.stem
         return [Query(
             query_id=query_id,
-            sql=sql,
-            query_type=QueryType.OLAP
+            sql=sql
         )]
 
-    def load_resources(self, resource_file: str):
+    def load_resource(self, query_id: str) -> Optional[Dict]:
         """
-        Load query resource requirements from CSV file
+        Load resource profile for a specific query
 
         Args:
-            resource_file: Path to CSV file with columns: query_id, cpu_time, data_scanned, scale_factor
+            query_id: Query identifier (e.g., "tpch_1")
+
+        Returns:
+            Resource profile dict with keys: cpu, mem, net (each is a list of floats 0-1)
+            Returns None if resource file not found
         """
-        path = Path(resource_file)
-        if not path.exists():
-            print(f"Warning: Resource file not found: {resource_file}")
-            return
+        # Check cache first
+        if query_id in self.resources:
+            return self.resources[query_id]
 
-        with open(path, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                query_id = row['query_id']
-                self.resources[query_id] = {
-                    'cpu_time': float(row.get('cpu_time', 0)),
-                    'data_scanned': float(row.get('data_scanned', 0)),
-                    'scale_factor': float(row.get('scale_factor', 1.0))
-                }
+        # If no resource directory specified, return None
+        if not self.resource_dir:
+            return None
 
-        print(f"Loaded resource requirements for {len(self.resources)} queries")
+        # Load from file
+        resource_file = Path(self.resource_dir) / f"{query_id}.json"
+        if not resource_file.exists():
+            return None
+
+        try:
+            with open(resource_file, 'r') as f:
+                resource_data = json.load(f)
+
+            # Validate format
+            if not all(key in resource_data for key in ['cpu', 'mem', 'net']):
+                print(f"Warning: Invalid resource format for {query_id}")
+                return None
+
+            # Cache and return
+            self.resources[query_id] = resource_data
+            return resource_data
+
+        except Exception as e:
+            print(f"Warning: Failed to load resource file for {query_id}: {e}")
+            return None
 
     async def submit_query(self, query: Query) -> str:
         """
@@ -129,13 +182,13 @@ class SchedulingClient:
         payload = {
             'query_id': query.query_id,
             'sql': query.sql,
-            'query_type': query.query_type.value,
             'client_id': self.client_id
         }
 
-        # Add resource requirements if available
-        if query.query_id in self.resources:
-            payload['resource_requirements'] = self.resources[query.query_id]
+        # Load and add resource profile if available
+        resource_data = self.load_resource(query.query_id)
+        if resource_data:
+            payload['resource_profile'] = resource_data
 
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as response:

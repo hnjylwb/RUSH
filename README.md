@@ -23,29 +23,51 @@ Optional arguments:
 
 ### 3. Submit Queries
 
+The client supports two modes: one-time submission and interactive mode.
+
+#### One-time mode (default)
+
 List available queries:
 ```bash
 python run_client.py tpch
 python run_client.py ssb
-python run_client.py clickbench
 ```
 
 Submit specific queries:
 ```bash
 python run_client.py tpch 1 2 3
-python run_client.py ssb 1.1 2.1 3.1
+python run_client.py ssb 1.1 2.1 3.1 --resources resources/ssb
 ```
+
+#### Interactive mode
+
+Start interactive client (no benchmark argument or use `-i` flag):
+```bash
+python run_client.py
+python run_client.py -i --resources resources
+```
+
+Available commands in interactive mode:
+- `list <benchmark>` - List available queries
+- `submit <benchmark> <q1> [q2 ...]` - Submit queries
+- `status` - Get server status
+- `tasks` - Show submitted tasks count
+- `resources` - Show cached resources
+- `clear` - Clear resource cache
+- `help` - Show help
+- `exit` - Exit client
 
 Optional arguments:
 - `--server`: Server URL (default: http://localhost:8080)
 - `--client-id`: Client identifier
-- `--resources`: CSV file with query resource requirements (optional)
+- `--resources`: Directory containing query resource JSON files
+- `-i, --interactive`: Force interactive mode
 
 ## Directory Structure
 
 ```
 ├── run_server.py          # Server startup script
-├── run_client.py          # Client startup script
+├── run_client.py          # Client script (one-time & interactive modes)
 ├── ease/                  # Core library
 │   ├── server.py          # Server implementation
 │   ├── client.py          # Client implementation
