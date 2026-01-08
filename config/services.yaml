@@ -2,12 +2,18 @@
 
 services:
   vm:
+    # Single VM worker (can add more workers dynamically via API)
     - name: "vm-1"
+      endpoint: "<VM_WORKER_ENDPOINT>"  # e.g., "http://192.168.1.10:8081"
       cpu_cores: 32
       memory_gb: 128
       io_bandwidth_mbps: 1250
       network_bandwidth_mbps: 1250
       cost_per_hour: 1.536
+
+    # For auto-scaling: Start with initial worker, then use API to add/remove workers
+    # POST /workers/add    {"executor_name": "vm-1", "endpoint": "http://192.168.1.11:8081"}
+    # POST /workers/remove {"executor_name": "vm-1", "endpoint": "http://192.168.1.11:8081"}
 
   faas:
     - name: "faas-cluster-1"
