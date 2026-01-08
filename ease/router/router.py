@@ -4,7 +4,7 @@ Router - 查询路由决策
 
 from typing import Dict, List, Optional
 from ..core import Query, ServiceType, ResourceRequirements
-from .models import PerformanceModel, CostModel
+from .router_model import RouterModel
 
 
 class RoutingDecision:
@@ -40,9 +40,8 @@ class Router:
         self.config = config or {}
         self.service_configs = service_configs or {}
 
-        # Initialize models
-        self.performance_model = PerformanceModel(config=self.config.get('performance', {}))
-        self.cost_model = CostModel(config=self.config.get('cost', {}))
+        # Initialize router model
+        self.router_model = RouterModel(config=self.config.get('router_model', {}))
 
         # Scoring parameters
         self.cost_weight = self.config.get('cost_weight', 1.0)        # α
@@ -86,28 +85,25 @@ class Router:
             # Get service configuration
             service_config = self.service_configs.get(service_type, {})
 
-            # Estimate performance
+            # Estimate time and cost
             if service_type == ServiceType.VM:
-                perf = self.performance_model.estimate_vm(resources, service_config)
-                cost = self.cost_model.estimate_vm(perf.execution_time, service_config, resources)
+                result = self.router_model.estimate_vm(resources, service_config)
             elif service_type == ServiceType.FAAS:
-                perf = self.performance_model.estimate_faas(resources, service_config)
-                cost = self.cost_model.estimate_faas(perf.execution_time, service_config)
+                result = self.router_model.estimate_faas(resources, service_config)
             elif service_type == ServiceType.QAAS:
-                perf = self.performance_model.estimate_qaas(resources, service_config)
-                cost = self.cost_model.estimate_qaas(resources, service_config)
+                result = self.router_model.estimate_qaas(resources, service_config)
 
             # Store estimates
             estimates[service_type] = {
-                'time': perf.execution_time,
-                'cost': cost,
-                'breakdown': perf.breakdown
+                'time': result.execution_time,
+                'cost': result.cost,
+                'breakdown': result.breakdown
             }
 
             # Calculate score
             queue_size = queue_sizes.get(service_type, 0)
             load_weight = self.load_weights.get(service_type, 0.1)
-            score = self._calculate_score(perf.execution_time, cost, queue_size, load_weight)
+            score = self._calculate_score(result.execution_time, result.cost, queue_size, load_weight)
             scores[service_type] = score
 
         # Select service with lowest score
