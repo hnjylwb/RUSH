@@ -63,6 +63,24 @@ Optional arguments:
 - `--resources`: Directory containing query resource JSON files
 - `-i, --interactive`: Force interactive mode
 
+## Deploy Lambda Function
+
+Deploy the query executor to AWS Lambda for FaaS support:
+
+```bash
+cd lambda
+python deploy.py
+```
+
+This will:
+- Package the Lambda function with DuckDB dependencies
+- Create IAM execution role with necessary permissions
+- Deploy or update the function on AWS Lambda
+
+Requirements:
+- AWS credentials configured via `aws configure`
+- boto3 installed: `pip install boto3`
+
 ## Directory Structure
 
 ```
@@ -76,6 +94,10 @@ Optional arguments:
 │   ├── router/            # Router with cost models
 │   ├── scheduler/         # Schedulers
 │   └── config/            # Configuration management
+├── lambda/                # AWS Lambda function
+│   ├── lambda_function.py # Query executor for Lambda
+│   ├── deploy.py          # Deployment script
+│   └── requirements.txt   # Lambda dependencies
 ├── config/                # Configuration files
 └── queries/               # Query files
     ├── tpch/              # TPC-H queries
