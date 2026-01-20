@@ -56,6 +56,15 @@ class VMExecutor(BaseExecutor):
         # Round-robin counter for load balancing
         self._endpoint_index = 0
 
+        # Health check tracking
+        self._worker_health: Dict[str, Dict] = {}
+        for endpoint in self.endpoints:
+            self._worker_health[endpoint] = {
+                'healthy': True,
+                'consecutive_failures': 0,
+                'last_check': 0
+            }
+
     def add_worker(self, endpoint: str) -> bool:
         """
         Add a new worker endpoint (for auto-scaling)
@@ -68,6 +77,11 @@ class VMExecutor(BaseExecutor):
         """
         if endpoint not in self.endpoints:
             self.endpoints.append(endpoint)
+            self._worker_health[endpoint] = {
+                'healthy': True,
+                'consecutive_failures': 0,
+                'last_check': 0
+            }
             print(f"[{self.name}] Added worker: {endpoint} (total: {len(self.endpoints)})")
             return True
         return False
@@ -84,6 +98,8 @@ class VMExecutor(BaseExecutor):
         """
         if endpoint in self.endpoints:
             self.endpoints.remove(endpoint)
+            if endpoint in self._worker_health:
+                del self._worker_health[endpoint]
             print(f"[{self.name}] Removed worker: {endpoint} (remaining: {len(self.endpoints)})")
             return True
         return False
@@ -91,6 +107,59 @@ class VMExecutor(BaseExecutor):
     def get_workers(self) -> List[str]:
         """Get list of current worker endpoints"""
         return self.endpoints.copy()
+
+    def get_healthy_workers(self) -> List[str]:
+        """Get list of healthy worker endpoints"""
+        return [ep for ep in self.endpoints if self._worker_health.get(ep, {}).get('healthy', True)]
+
+    async def check_worker_health(self, endpoint: str) -> bool:
+        """
+        Check health of a single worker
+
+        Args:
+            endpoint: Worker endpoint URL
+
+        Returns:
+            True if healthy, False otherwise
+        """
+        try:
+            import aiohttp
+
+            async with aiohttp.ClientSession() as session:
+                url = f"{endpoint}/health"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                    if resp.status == 200:
+                        health_status = self._worker_health.get(endpoint, {})
+                        health_status['healthy'] = True
+                        health_status['consecutive_failures'] = 0
+                        health_status['last_check'] = time.time()
+                        return True
+                    else:
+                        self._mark_worker_failure(endpoint)
+                        return False
+
+        except Exception:
+            self._mark_worker_failure(endpoint)
+            return False
+
+    def _mark_worker_failure(self, endpoint: str):
+        """Mark a worker as having failed a health check"""
+        if endpoint not in self._worker_health:
+            self._worker_health[endpoint] = {
+                'healthy': True,
+                'consecutive_failures': 0,
+                'last_check': 0
+            }
+
+        health_status = self._worker_health[endpoint]
+        health_status['consecutive_failures'] += 1
+        health_status['last_check'] = time.time()
+
+        # Mark as unhealthy after 3 consecutive failures
+        if health_status['consecutive_failures'] >= 3:
+            if health_status['healthy']:
+                health_status['healthy'] = False
+                print(f"[{self.name}] Worker marked as unhealthy: {endpoint}")
 
     def _get_next_endpoint(self) -> str:
         """Get next endpoint using round-robin load balancing"""

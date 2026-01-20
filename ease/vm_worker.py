@@ -41,7 +41,8 @@ class VMWorker:
     """
 
     def __init__(self, host: str = "0.0.0.0", port: int = 8081,
-                 data_dir: Optional[str] = None):
+                 data_dir: Optional[str] = None,
+                 scheduler_url: Optional[str] = None):
         """
         Initialize VM worker
 
@@ -49,10 +50,12 @@ class VMWorker:
             host: Host address to bind to
             port: Port to listen on
             data_dir: Directory containing data files (for DuckDB)
+            scheduler_url: URL of the scheduler server for auto-registration
         """
         self.host = host
         self.port = port
         self.data_dir = data_dir
+        self.scheduler_url = scheduler_url
         self.running = False
         self.app = None
         self.runner = None
@@ -196,6 +199,70 @@ class VMWorker:
                 error_message=str(e)
             )
 
+    async def _register_with_scheduler(self):
+        """Register this worker with the scheduler"""
+        if not self.scheduler_url:
+            return
+
+        try:
+            import aiohttp
+
+            # Determine the worker endpoint
+            if self.host == "0.0.0.0":
+                import socket
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                endpoint = f"http://{local_ip}:{self.port}"
+            else:
+                endpoint = f"http://{self.host}:{self.port}"
+
+            # Save endpoint for deregistration
+            self.endpoint = endpoint
+
+            # Send registration request
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.scheduler_url}/workers/register"
+                payload = {
+                    "endpoint": endpoint
+                }
+
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        print(f"Successfully registered with scheduler at {self.scheduler_url}")
+                        print(f"  Endpoint: {endpoint}")
+                        if 'executor_name' in result:
+                            print(f"  Assigned to executor: {result['executor_name']}")
+                    else:
+                        print(f"Failed to register with scheduler: HTTP {resp.status}")
+
+        except Exception as e:
+            print(f"Warning: Could not register with scheduler: {e}")
+            print(f"Worker will continue running, but may need manual registration")
+
+    async def _deregister_with_scheduler(self):
+        """Deregister this worker from the scheduler"""
+        if not self.scheduler_url or not hasattr(self, 'endpoint'):
+            return
+
+        try:
+            import aiohttp
+
+            async with aiohttp.ClientSession() as session:
+                url = f"{self.scheduler_url}/workers/deregister"
+                payload = {
+                    "endpoint": self.endpoint
+                }
+
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        print(f"Successfully deregistered from scheduler")
+                    else:
+                        print(f"Failed to deregister from scheduler: HTTP {resp.status}")
+
+        except Exception as e:
+            print(f"Warning: Could not deregister from scheduler: {e}")
+
     async def start(self):
         """Start the VM worker service"""
         if self.running:
@@ -229,6 +296,9 @@ class VMWorker:
             print(f"VM Worker is running on http://{self.host}:{self.port}")
             print("Press Ctrl+C to stop\n")
 
+            # Register with scheduler if URL provided
+            await self._register_with_scheduler()
+
             # Keep running
             try:
                 while self.running:
@@ -241,6 +311,9 @@ class VMWorker:
     async def stop(self):
         """Stop the VM worker service"""
         self.running = False
+
+        # Deregister from scheduler
+        await self._deregister_with_scheduler()
 
         # Close DuckDB connection
         if self.db_conn:

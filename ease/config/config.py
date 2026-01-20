@@ -45,6 +45,7 @@ class Config:
     def _get_default_config(self) -> Dict:
         """Get default configuration"""
         return {
+            'enabled_services': ['vm', 'faas', 'qaas'],
             'services': {
                 'vm': [{
                     'name': 'vm-1',

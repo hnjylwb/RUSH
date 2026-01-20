@@ -19,6 +19,8 @@ async def main():
                         help='Port to listen on (default: 8081)')
     parser.add_argument('--data-dir', type=str, default=None,
                         help='Directory containing data files')
+    parser.add_argument('--scheduler', type=str, default=None,
+                        help='Scheduler URL for auto-registration (e.g., http://localhost:8080)')
 
     args = parser.parse_args()
 
@@ -26,7 +28,8 @@ async def main():
     worker = VMWorker(
         host=args.host,
         port=args.port,
-        data_dir=args.data_dir
+        data_dir=args.data_dir,
+        scheduler_url=args.scheduler
     )
 
     try:

@@ -81,41 +81,49 @@ class SchedulingServer:
         # Background tasks
         self.scheduler_task = None
         self.rescheduler_task = None
+        self.health_check_task = None
 
     def _init_executors(self):
         """Initialize executors from configuration"""
+        # Get enabled service types
+        enabled_services = self.config.get('enabled_services', ['vm', 'faas', 'qaas'])
+        enabled_set = set(enabled_services)
+
         # VM executors
-        vm_configs = self.config.get('services.vm', [])
-        for vm_config in vm_configs:
-            service_config = ServiceConfig(
-                service_type=ServiceType.VM,
-                name=vm_config.get('name', 'vm'),
-                config=vm_config
-            )
-            executor = VMExecutor(service_config)
-            self.executors[ServiceType.VM] = executor
+        if 'vm' in enabled_set:
+            vm_configs = self.config.get('services.vm', [])
+            for vm_config in vm_configs:
+                service_config = ServiceConfig(
+                    service_type=ServiceType.VM,
+                    name=vm_config.get('name', 'vm'),
+                    config=vm_config
+                )
+                executor = VMExecutor(service_config)
+                self.executors[ServiceType.VM] = executor
 
         # FaaS executors
-        faas_configs = self.config.get('services.faas', [])
-        for faas_config in faas_configs:
-            service_config = ServiceConfig(
-                service_type=ServiceType.FAAS,
-                name=faas_config.get('name', 'faas'),
-                config=faas_config
-            )
-            executor = FaaSExecutor(service_config)
-            self.executors[ServiceType.FAAS] = executor
+        if 'faas' in enabled_set:
+            faas_configs = self.config.get('services.faas', [])
+            for faas_config in faas_configs:
+                service_config = ServiceConfig(
+                    service_type=ServiceType.FAAS,
+                    name=faas_config.get('name', 'faas'),
+                    config=faas_config
+                )
+                executor = FaaSExecutor(service_config)
+                self.executors[ServiceType.FAAS] = executor
 
         # QaaS executors
-        qaas_configs = self.config.get('services.qaas', [])
-        for qaas_config in qaas_configs:
-            service_config = ServiceConfig(
-                service_type=ServiceType.QAAS,
-                name=qaas_config.get('name', 'qaas'),
-                config=qaas_config
-            )
-            executor = QaaSExecutor(service_config)
-            self.executors[ServiceType.QAAS] = executor
+        if 'qaas' in enabled_set:
+            qaas_configs = self.config.get('services.qaas', [])
+            for qaas_config in qaas_configs:
+                service_config = ServiceConfig(
+                    service_type=ServiceType.QAAS,
+                    name=qaas_config.get('name', 'qaas'),
+                    config=qaas_config
+                )
+                executor = QaaSExecutor(service_config)
+                self.executors[ServiceType.QAAS] = executor
 
     def _setup_routes(self):
         """Setup HTTP API routes"""
@@ -176,37 +184,36 @@ class SchedulingServer:
                 status = self.get_status()
                 return web.json_response(status)
 
-            # Manage VM workers (for auto-scaling)
-            async def add_worker(request):
-                """Add a worker to a VM executor"""
+            # Worker auto-registration
+            async def register_worker(request):
+                """Auto-register a worker (assigns to first available VM executor)"""
                 try:
                     data = await request.json()
-                    executor_name = data.get('executor_name')
                     endpoint = data.get('endpoint')
 
-                    if not executor_name or not endpoint:
+                    if not endpoint:
                         return web.json_response({
-                            "error": "Missing 'executor_name' or 'endpoint'"
+                            "error": "Missing 'endpoint'"
                         }, status=400)
 
-                    # Find the VM executor
+                    # Find first VM executor and add worker
                     vm_executor = None
                     for service_type, executor in self.executors.items():
-                        if service_type == ServiceType.VM and executor.name == executor_name:
+                        if service_type == ServiceType.VM:
                             vm_executor = executor
                             break
 
                     if not vm_executor:
                         return web.json_response({
-                            "error": f"VM executor '{executor_name}' not found"
+                            "error": "No VM executor configured"
                         }, status=404)
 
                     # Add worker
                     added = vm_executor.add_worker(endpoint)
 
                     return web.json_response({
-                        "status": "added" if added else "already_exists",
-                        "executor": executor_name,
+                        "status": "registered" if added else "already_registered",
+                        "executor_name": vm_executor.name,
                         "endpoint": endpoint,
                         "total_workers": len(vm_executor.get_workers())
                     })
@@ -214,70 +221,35 @@ class SchedulingServer:
                 except Exception as e:
                     return web.json_response({"error": str(e)}, status=400)
 
-            async def remove_worker(request):
-                """Remove a worker from a VM executor"""
+            async def deregister_worker(request):
+                """Deregister a worker (called when worker shuts down)"""
                 try:
                     data = await request.json()
-                    executor_name = data.get('executor_name')
                     endpoint = data.get('endpoint')
 
-                    if not executor_name or not endpoint:
+                    if not endpoint:
                         return web.json_response({
-                            "error": "Missing 'executor_name' or 'endpoint'"
+                            "error": "Missing 'endpoint'"
                         }, status=400)
 
-                    # Find the VM executor
-                    vm_executor = None
+                    # Find and remove worker from all VM executors
+                    removed = False
                     for service_type, executor in self.executors.items():
-                        if service_type == ServiceType.VM and executor.name == executor_name:
-                            vm_executor = executor
-                            break
+                        if service_type == ServiceType.VM:
+                            if executor.remove_worker(endpoint):
+                                removed = True
+                                break
 
-                    if not vm_executor:
+                    if removed:
                         return web.json_response({
-                            "error": f"VM executor '{executor_name}' not found"
-                        }, status=404)
-
-                    # Remove worker
-                    removed = vm_executor.remove_worker(endpoint)
-
-                    return web.json_response({
-                        "status": "removed" if removed else "not_found",
-                        "executor": executor_name,
-                        "endpoint": endpoint,
-                        "remaining_workers": len(vm_executor.get_workers())
-                    })
-
-                except Exception as e:
-                    return web.json_response({"error": str(e)}, status=400)
-
-            async def list_workers(request):
-                """List all workers for a VM executor"""
-                try:
-                    executor_name = request.match_info.get('executor_name')
-
-                    if not executor_name:
+                            "status": "deregistered",
+                            "endpoint": endpoint
+                        })
+                    else:
                         return web.json_response({
-                            "error": "Missing 'executor_name'"
-                        }, status=400)
-
-                    # Find the VM executor
-                    vm_executor = None
-                    for service_type, executor in self.executors.items():
-                        if service_type == ServiceType.VM and executor.name == executor_name:
-                            vm_executor = executor
-                            break
-
-                    if not vm_executor:
-                        return web.json_response({
-                            "error": f"VM executor '{executor_name}' not found"
-                        }, status=404)
-
-                    return web.json_response({
-                        "executor": executor_name,
-                        "workers": vm_executor.get_workers(),
-                        "count": len(vm_executor.get_workers())
-                    })
+                            "status": "not_found",
+                            "endpoint": endpoint
+                        })
 
                 except Exception as e:
                     return web.json_response({"error": str(e)}, status=400)
@@ -288,9 +260,8 @@ class SchedulingServer:
             app.router.add_get('/status', get_status)
 
             # Worker management endpoints
-            app.router.add_post('/workers/add', add_worker)
-            app.router.add_post('/workers/remove', remove_worker)
-            app.router.add_get('/workers/{executor_name}', list_workers)
+            app.router.add_post('/workers/register', register_worker)
+            app.router.add_post('/workers/deregister', deregister_worker)
 
             self.app = app
             return True
@@ -319,20 +290,20 @@ class SchedulingServer:
         if has_http:
             print(f"\nHTTP API: http://{self.host}:{self.port}")
             print("  Query Management:")
-            print("    - POST /submit       - Submit query")
-            print("    - GET  /task/{id}    - Get task status")
-            print("  Worker Management (Auto-scaling):")
-            print("    - POST /workers/add      - Add VM worker")
-            print("    - POST /workers/remove   - Remove VM worker")
-            print("    - GET  /workers/{name}   - List workers")
+            print("    - POST /submit            - Submit query")
+            print("    - GET  /task/{id}         - Get task status")
+            print("  Worker Management:")
+            print("    - POST /workers/register   - Register worker")
+            print("    - POST /workers/deregister - Deregister worker")
             print("  Server Status:")
-            print("    - GET  /health       - Health check")
-            print("    - GET  /status       - Get server status")
+            print("    - GET  /health            - Health check")
+            print("    - GET  /status            - Get server status")
         print()
 
         # Start background tasks
         self.scheduler_task = asyncio.create_task(self._run_scheduler())
         self.rescheduler_task = asyncio.create_task(self._run_rescheduler())
+        self.health_check_task = asyncio.create_task(self._run_health_check())
 
         # Start HTTP server if available
         if has_http:
@@ -370,6 +341,8 @@ class SchedulingServer:
             self.scheduler_task.cancel()
         if self.rescheduler_task:
             self.rescheduler_task.cancel()
+        if self.health_check_task:
+            self.health_check_task.cancel()
 
         # Stop HTTP server
         if self.runner:
@@ -499,6 +472,20 @@ class SchedulingServer:
             except Exception as e:
                 print(f"[Rescheduler] Error: {e}")
 
+    async def _run_health_check(self):
+        """Background task: check worker health"""
+        while self.running:
+            try:
+                # Check health of all VM workers
+                for service_type, executor in self.executors.items():
+                    if service_type == ServiceType.VM:
+                        for endpoint in executor.get_workers():
+                            await executor.check_worker_health(endpoint)
+
+                await asyncio.sleep(10.0)  # Check every 10 seconds
+            except Exception as e:
+                print(f"[HealthCheck] Error: {e}")
+
     def get_status(self) -> Dict:
         """Get server status"""
         queue_sizes = {
@@ -506,12 +493,23 @@ class SchedulingServer:
             for service_type in self.executors.keys()
         }
 
+        executor_info = {}
+        for service_type, executor in self.executors.items():
+            info = executor.get_service_info()
+            if service_type == ServiceType.VM:
+                info['workers'] = {
+                    'total': len(executor.get_workers()),
+                    'healthy': len(executor.get_healthy_workers()),
+                    'endpoints': {
+                        ep: executor._worker_health.get(ep, {})
+                        for ep in executor.get_workers()
+                    }
+                }
+            executor_info[service_type.value] = info
+
         return {
             'running': self.running,
             'total_tasks': len(self.tasks),
             'queues': queue_sizes,
-            'executors': {
-                service_type.value: executor.get_service_info()
-                for service_type, executor in self.executors.items()
-            }
+            'executors': executor_info
         }
