@@ -2,7 +2,7 @@
 Scheduler module
 """
 
-from .intra import IntraScheduler
-from .inter import InterScheduler
+from .scheduler import Scheduler
+from .rescheduler import Rescheduler
 
-__all__ = ['IntraScheduler', 'InterScheduler']
+__all__ = ['Scheduler', 'Rescheduler']

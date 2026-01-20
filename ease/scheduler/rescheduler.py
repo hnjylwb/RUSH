@@ -1,5 +1,5 @@
 """
-Inter-Scheduler - 跨服务调度
+Rescheduler
 
 Implements query migration between services based on waiting time analysis.
 """
@@ -8,13 +8,13 @@ import time
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from ..core import Query, ServiceType
-from .intra import IntraScheduler
-from ..router import Router
+from .scheduler import Scheduler
+from ..cost_model import CostModel
 
 
-class InterScheduler:
+class Rescheduler:
     """
-    Inter-Service Scheduler
+    Rescheduler
 
     Responsibilities:
     - Monitor query waiting times in each service queue
@@ -24,17 +24,20 @@ class InterScheduler:
     - Prevent ping-pong migrations
     """
 
-    def __init__(self, router: Router, intra_scheduler: IntraScheduler, config: Dict = None):
+    def __init__(self, cost_model: CostModel, scheduler: Scheduler,
+                 service_configs: Dict[ServiceType, Dict], config: Dict = None):
         """
-        Initialize inter-scheduler
+        Initialize rescheduler
 
         Args:
-            router: Router for re-routing decisions
-            intra_scheduler: Intra-scheduler to access queues
+            cost_model: Cost model for estimating time and cost
+            scheduler: Scheduler to access queues
+            service_configs: Configuration for each service type
             config: Configuration parameters
         """
-        self.router = router
-        self.intra_scheduler = intra_scheduler
+        self.cost_model = cost_model
+        self.scheduler = scheduler
+        self.service_configs = service_configs
         self.config = config or {}
 
         # Migration parameters (Formula 16)
@@ -65,7 +68,7 @@ class InterScheduler:
         migrations = []
 
         # Iterate through all service queues
-        for service_type, queue in self.intra_scheduler.queues.items():
+        for service_type, queue in self.scheduler.queues.items():
             if not queue:
                 continue
 
@@ -146,7 +149,7 @@ class InterScheduler:
         """
         # Get all executor instances for this service
         executor_ids = [
-            eid for eid in self.intra_scheduler.executor_states.keys()
+            eid for eid in self.scheduler.executor_states.keys()
             if eid.startswith(service_type.value)
         ]
 
@@ -156,17 +159,17 @@ class InterScheduler:
         # Use the first executor's state (or average across all)
         # For simplicity, we use the first one
         executor_id = executor_ids[0]
-        state = self.intra_scheduler.executor_states[executor_id]
+        state = self.scheduler.executor_states[executor_id]
 
         k, t = state.capacity_matrix_shape
 
         # Calculate total resource demand from queued queries
-        queue = self.intra_scheduler.queues.get(service_type, [])
+        queue = self.scheduler.queues.get(service_type, [])
         total_demand = np.zeros((k, t))
 
         for query in queue:
-            if query.query_id in self.intra_scheduler.query_demands:
-                demand = self.intra_scheduler.query_demands[query.query_id]
+            if query.query_id in self.scheduler.query_demands:
+                demand = self.scheduler.query_demands[query.query_id]
                 total_demand += demand.matrix
 
         # Add resource usage from running queries
@@ -224,15 +227,15 @@ class InterScheduler:
             waiting_time = self._estimate_waiting_time(service_type)
 
             # Get service configuration
-            service_config = self.router.service_configs.get(service_type, {})
+            service_config = self.service_configs.get(service_type, {})
 
             # Estimate execution time and cost using router model
             if service_type == ServiceType.VM:
-                estimate = self.router.router_model.estimate_vm(resources, service_config)
+                estimate = self.cost_model.estimate_vm(resources, service_config)
             elif service_type == ServiceType.FAAS:
-                estimate = self.router.router_model.estimate_faas(resources, service_config)
+                estimate = self.cost_model.estimate_faas(resources, service_config)
             elif service_type == ServiceType.QAAS:
-                estimate = self.router.router_model.estimate_qaas(resources, service_config)
+                estimate = self.cost_model.estimate_qaas(resources, service_config)
             else:
                 continue
 
@@ -265,13 +268,13 @@ class InterScheduler:
             target_service: Target service type
         """
         # Remove from source queue
-        source_queue = self.intra_scheduler.queues.get(source_service, [])
+        source_queue = self.scheduler.queues.get(source_service, [])
         if query in source_queue:
             source_queue.remove(query)
 
         # Remove demand from source
-        if query.query_id in self.intra_scheduler.query_demands:
-            del self.intra_scheduler.query_demands[query.query_id]
+        if query.query_id in self.scheduler.query_demands:
+            del self.scheduler.query_demands[query.query_id]
 
         # Update query routing decision
         query.routing_decision = target_service.value
@@ -285,26 +288,26 @@ class InterScheduler:
                 scale_factor=query.resource_requirements.get('scale_factor', 50.0)
             )
 
-            service_config = self.router.service_configs.get(target_service, {})
+            service_config = self.service_configs.get(target_service, {})
 
             if target_service == ServiceType.VM:
-                estimate = self.router.router_model.estimate_vm(resources, service_config)
+                estimate = self.cost_model.estimate_vm(resources, service_config)
             elif target_service == ServiceType.FAAS:
-                estimate = self.router.router_model.estimate_faas(resources, service_config)
+                estimate = self.cost_model.estimate_faas(resources, service_config)
             elif target_service == ServiceType.QAAS:
-                estimate = self.router.router_model.estimate_qaas(resources, service_config)
+                estimate = self.cost_model.estimate_qaas(resources, service_config)
 
             query.estimated_time = estimate.execution_time
             query.estimated_cost = estimate.cost
 
         # Enqueue to target service
-        self.intra_scheduler.enqueue(query, target_service)
+        self.scheduler.enqueue(query, target_service)
 
         # Update migration tracking
         self.query_migration_count[query.query_id] = \
             self.query_migration_count.get(query.query_id, 0) + 1
         self.last_migration_time[query.query_id] = time.time()
 
-        print(f"[InterScheduler] Migrated query {query.query_id}: {source_service.value} → {target_service.value} "
+        print(f"[Rescheduler] Migrated query {query.query_id}: {source_service.value} to {target_service.value} "
               f"(migrations: {self.query_migration_count[query.query_id]})")
 

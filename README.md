@@ -89,10 +89,10 @@ Requirements:
 ├── ease/                  # Core library
 │   ├── server.py          # Server implementation
 │   ├── client.py          # Client implementation
+│   ├── cost_model.py      # Cost model for estimating time and cost
 │   ├── core/              # Data models
 │   ├── executors/         # Executors (VM/FaaS/QaaS)
-│   ├── router/            # Router with cost models
-│   ├── scheduler/         # Schedulers
+│   ├── scheduler/         # Scheduler and Rescheduler
 │   └── config/            # Configuration management
 ├── lambda/                # AWS Lambda function
 │   ├── lambda_function.py # Query executor for Lambda

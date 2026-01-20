@@ -8,9 +8,9 @@ from typing import Dict, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
-from .core import Query, ServiceType, ServiceConfig, ExecutionResult, ExecutionStatus
-from .router import Router
-from .scheduler import IntraScheduler, InterScheduler
+from .core import Query, ServiceType, ServiceConfig, ExecutionResult, ExecutionStatus, ResourceRequirements
+from .cost_model import CostModel
+from .scheduler import Scheduler, Rescheduler
 from .executors import BaseExecutor, VMExecutor, FaaSExecutor, QaaSExecutor
 from .config import Config
 
@@ -55,24 +55,23 @@ class SchedulingServer:
         self.executors: Dict[ServiceType, BaseExecutor] = {}
         self._init_executors()
 
-        # Initialize router and schedulers
+        # Initialize cost model and schedulers
         service_configs = {
             service_type: executor.config.config
             for service_type, executor in self.executors.items()
         }
-        self.router = Router(
-            config=self.config,
-            service_configs=service_configs
-        )
-        # Convert executors dict to format expected by IntraScheduler
+        self.cost_model = CostModel(config=self.config.get('cost_model', {}))
+
+        # Convert executors dict to format expected by Scheduler
         executors_for_scheduler = {
             service_type: [executor]
             for service_type, executor in self.executors.items()
         }
-        self.intra_scheduler = IntraScheduler(executors=executors_for_scheduler)
-        self.inter_scheduler = InterScheduler(
-            intra_scheduler=self.intra_scheduler,
-            router=self.router,
+        self.scheduler = Scheduler(executors=executors_for_scheduler)
+        self.rescheduler = Rescheduler(
+            cost_model=self.cost_model,
+            scheduler=self.scheduler,
+            service_configs=service_configs,
             config=self.config
         )
 
@@ -80,8 +79,8 @@ class SchedulingServer:
         self.tasks: Dict[str, QueryTask] = {}
 
         # Background tasks
-        self.intra_scheduler_task = None
-        self.inter_scheduler_task = None
+        self.scheduler_task = None
+        self.rescheduler_task = None
 
     def _init_executors(self):
         """Initialize executors from configuration"""
@@ -332,8 +331,8 @@ class SchedulingServer:
         print()
 
         # Start background tasks
-        self.intra_scheduler_task = asyncio.create_task(self._run_intra_scheduler())
-        self.inter_scheduler_task = asyncio.create_task(self._run_inter_scheduler())
+        self.scheduler_task = asyncio.create_task(self._run_scheduler())
+        self.rescheduler_task = asyncio.create_task(self._run_rescheduler())
 
         # Start HTTP server if available
         if has_http:
@@ -367,10 +366,10 @@ class SchedulingServer:
         self.running = False
 
         # Cancel background tasks
-        if self.intra_scheduler_task:
-            self.intra_scheduler_task.cancel()
-        if self.inter_scheduler_task:
-            self.inter_scheduler_task.cancel()
+        if self.scheduler_task:
+            self.scheduler_task.cancel()
+        if self.rescheduler_task:
+            self.rescheduler_task.cancel()
 
         # Stop HTTP server
         if self.runner:
@@ -392,17 +391,57 @@ class SchedulingServer:
         # Generate task ID
         task_id = str(uuid.uuid4())
 
-        # Route query
-        queue_sizes = {
-            service_type: self.intra_scheduler.get_queue_size(service_type)
-            for service_type in self.executors.keys()
-        }
-        decision = self.router.route(query, queue_sizes)
+        # Select service based on cost model estimates and queue sizes
+        if not query.resource_requirements:
+            # Default to VM if no resource requirements
+            selected_service = ServiceType.VM
+            estimated_time = 0.0
+            estimated_cost = 0.0
+        else:
+            resources = ResourceRequirements(
+                cpu_time=query.resource_requirements.get('cpu_time', 0),
+                data_scanned=query.resource_requirements.get('data_scanned', 0),
+                scale_factor=query.resource_requirements.get('scale_factor', 50.0)
+            )
+
+            # Get estimates for all services
+            best_service = None
+            best_score = float('inf')
+            estimates = {}
+
+            for service_type in self.executors.keys():
+                service_config = self.executors[service_type].config.config
+
+                # Get cost estimate
+                if service_type == ServiceType.VM:
+                    estimate = self.cost_model.estimate_vm(resources, service_config)
+                elif service_type == ServiceType.FAAS:
+                    estimate = self.cost_model.estimate_faas(resources, service_config)
+                elif service_type == ServiceType.QAAS:
+                    estimate = self.cost_model.estimate_qaas(resources, service_config)
+                else:
+                    continue
+
+                estimates[service_type] = estimate
+
+                # Calculate score: time + cost_weight * cost + load_penalty
+                queue_size = self.scheduler.get_queue_size(service_type)
+                cost_weight = 1.0
+                load_weight = 0.1
+                score = estimate.execution_time + cost_weight * estimate.cost + load_weight * queue_size
+
+                if score < best_score:
+                    best_score = score
+                    best_service = service_type
+
+            selected_service = best_service if best_service else ServiceType.VM
+            estimated_time = estimates[selected_service].execution_time if selected_service in estimates else 0.0
+            estimated_cost = estimates[selected_service].cost if selected_service in estimates else 0.0
 
         # Update query with routing decision
-        query.routing_decision = decision.selected_service.value
-        query.estimated_cost = decision.estimates[decision.selected_service]['cost']
-        query.estimated_time = decision.estimates[decision.selected_service]['time']
+        query.routing_decision = selected_service.value
+        query.estimated_cost = estimated_cost
+        query.estimated_time = estimated_time
 
         # Create task
         task = QueryTask(
@@ -414,10 +453,10 @@ class SchedulingServer:
         self.tasks[task_id] = task
 
         # Enqueue to scheduler
-        self.intra_scheduler.enqueue(query, decision.selected_service)
+        self.scheduler.enqueue(query, selected_service)
 
-        print(f"[Client {client_id}] Query {query.query_id} → {decision.selected_service.value} "
-              f"(est. time: {decision.estimated_time:.2f}s, cost: ${decision.estimated_cost:.4f})")
+        print(f"[Client {client_id}] Query {query.query_id} to {selected_service.value} "
+              f"(est. time: {estimated_time:.2f}s, cost: ${estimated_cost:.4f})")
 
         return task_id
 
@@ -425,12 +464,12 @@ class SchedulingServer:
         """Get status of a submitted task"""
         return self.tasks.get(task_id)
 
-    async def _run_intra_scheduler(self):
-        """Background task: run intra-service scheduler"""
+    async def _run_scheduler(self):
+        """Background task: run scheduler"""
         while self.running:
             try:
                 # Schedule and execute queries for all service types
-                results = await self.intra_scheduler.schedule_and_execute_all()
+                results = await self.scheduler.schedule_and_execute_all()
 
                 # Update task statuses based on results
                 for service_results in results.values():
@@ -441,29 +480,29 @@ class SchedulingServer:
                                 task.status = result.status
                                 task.result = result
 
-                                status_str = "✓" if result.status == ExecutionStatus.SUCCESS else "✗"
-                                print(f"[IntraScheduler] {status_str} Query {result.query_id} on {result.service_used} "
+                                status_str = "SUCCESS" if result.status == ExecutionStatus.SUCCESS else "FAILED"
+                                print(f"[Scheduler] {status_str} Query {result.query_id} on {result.service_used} "
                                       f"(time: {result.execution_time:.2f}s, cost: ${result.cost:.4f})")
                                 break
 
                 await asyncio.sleep(0.1)  # Avoid busy waiting
             except Exception as e:
-                print(f"[IntraScheduler] Error: {e}")
+                print(f"[Scheduler] Error: {e}")
 
-    async def _run_inter_scheduler(self):
-        """Background task: run inter-service scheduler"""
+    async def _run_rescheduler(self):
+        """Background task: run rescheduler"""
         while self.running:
             try:
-                # Run inter-scheduler to check for migrations
-                await self.inter_scheduler.check_and_migrate()
+                # Run rescheduler to check for migrations
+                await self.rescheduler.check_and_migrate()
                 await asyncio.sleep(1.0)  # Check every second
             except Exception as e:
-                print(f"[InterScheduler] Error: {e}")
+                print(f"[Rescheduler] Error: {e}")
 
     def get_status(self) -> Dict:
         """Get server status"""
         queue_sizes = {
-            service_type.value: self.intra_scheduler.get_queue_size(service_type)
+            service_type.value: self.scheduler.get_queue_size(service_type)
             for service_type in self.executors.keys()
         }
 

@@ -1,5 +1,5 @@
 """
-Intra-Scheduler - 服务内调度
+Scheduler
 
 Resource-aware scheduling within each service type.
 Implements Algorithm 1 from the paper.
@@ -123,9 +123,9 @@ class ExecutorState:
         self.remaining_capacity += demand.flatten()
 
 
-class IntraScheduler:
+class Scheduler:
     """
-    Intra-Service Scheduler
+    Service Scheduler
 
     Implements resource-aware scheduling within each service type.
     Uses Algorithm 1 from the paper for scheduling decisions.
@@ -134,7 +134,7 @@ class IntraScheduler:
     def __init__(self, executors: Dict[ServiceType, List[BaseExecutor]],
                  num_resources: int = 3, num_time_slots: int = 10):
         """
-        Initialize intra-scheduler
+        Initialize scheduler
 
         Args:
             executors: Executors for each service type

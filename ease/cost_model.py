@@ -1,16 +1,16 @@
 """
-Router model - 路由模型：估算查询在不同服务上的执行时间和成本
+Cost Model
 """
 
 from typing import Dict
 from dataclasses import dataclass
-from ..core import ResourceRequirements
+from .core import ResourceRequirements
 
 
 @dataclass
-class RoutingEstimate:
+class CostEstimate:
     """
-    Routing estimation result for a query on a specific service
+    Cost estimation result for a query on a specific service
 
     Attributes:
         execution_time: Estimated execution time (seconds)
@@ -22,9 +22,9 @@ class RoutingEstimate:
     breakdown: Dict[str, float]
 
 
-class RouterModel:
+class CostModel:
     """
-    Router Model
+    Cost Model
 
     Estimates query execution time and cost on different services.
     Combines performance modeling and cost calculation.
@@ -32,7 +32,7 @@ class RouterModel:
 
     def __init__(self, config: Dict = None):
         """
-        Initialize router model
+        Initialize cost model
 
         Args:
             config: Model configuration
@@ -40,7 +40,7 @@ class RouterModel:
         self.config = config or {}
 
     def estimate_vm(self, resources: ResourceRequirements,
-                    vm_config: Dict) -> RoutingEstimate:
+                    vm_config: Dict) -> CostEstimate:
         """
         Estimate time and cost for VM execution
 
@@ -52,7 +52,7 @@ class RouterModel:
             vm_config: VM configuration (cpu_cores, io_bandwidth, cost_per_hour, etc.)
 
         Returns:
-            RoutingEstimate with time, cost, and breakdown
+            CostEstimate with time, cost, and breakdown
         """
         # === Performance Estimation ===
 
@@ -82,7 +82,7 @@ class RouterModel:
 
         cost = execution_time * cost_per_second * utilization
 
-        return RoutingEstimate(
+        return CostEstimate(
             execution_time=execution_time,
             cost=cost,
             breakdown={
@@ -94,7 +94,7 @@ class RouterModel:
         )
 
     def estimate_faas(self, resources: ResourceRequirements,
-                      faas_config: Dict) -> RoutingEstimate:
+                      faas_config: Dict) -> CostEstimate:
         """
         Estimate time and cost for FaaS cluster execution
 
@@ -106,7 +106,7 @@ class RouterModel:
             faas_config: FaaS configuration (num_instances, memory, costs, etc.)
 
         Returns:
-            RoutingEstimate with time, cost, and breakdown
+            CostEstimate with time, cost, and breakdown
         """
         # === Performance Estimation ===
 
@@ -142,7 +142,7 @@ class RouterModel:
 
         cost = execution_cost + additional_cost
 
-        return RoutingEstimate(
+        return CostEstimate(
             execution_time=execution_time,
             cost=cost,
             breakdown={
@@ -155,7 +155,7 @@ class RouterModel:
         )
 
     def estimate_qaas(self, resources: ResourceRequirements,
-                      qaas_config: Dict) -> RoutingEstimate:
+                      qaas_config: Dict) -> CostEstimate:
         """
         Estimate time and cost for QaaS execution
 
@@ -167,7 +167,7 @@ class RouterModel:
             qaas_config: QaaS configuration (scan_speed, cost_per_tb, etc.)
 
         Returns:
-            RoutingEstimate with time, cost, and breakdown
+            CostEstimate with time, cost, and breakdown
         """
         # === Performance Estimation ===
 
@@ -189,7 +189,7 @@ class RouterModel:
         cost_per_tb = qaas_config.get('cost_per_tb', 5.0)
         cost = data_scanned_tb * cost_per_tb
 
-        return RoutingEstimate(
+        return CostEstimate(
             execution_time=execution_time,
             cost=cost,
             breakdown={
