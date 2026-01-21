@@ -1,6 +1,6 @@
-# Query Scheduling System
+# EASE
 
-Cross-cloud heterogeneous query scheduling system
+Resource-aware query scheduling system across heterogeneous cloud compute service
 
 ## Quick Start
 
@@ -47,21 +47,34 @@ You can run multiple workers on different VMs or different ports. Workers will b
 
 ### 4. Deploy Lambda Function (Optional)
 
-If you want to use FaaS support, deploy the query executor to AWS Lambda:
+If you want to use FaaS support, deploy the query executors to AWS Lambda.
 
+First, configure the Lambda memory sizes in [config/services.yaml](config/services.yaml):
+```yaml
+faas:
+  cost_per_gb_second: 0.0000166667
+  memory_sizes_gb: [2, 4, 6, 8, 10]  # Customize as needed
+```
+
+Then deploy:
 ```bash
 cd lambda
 python deploy.py
 ```
 
-This will:
-- Package the Lambda function with DuckDB dependencies
-- Create IAM execution role with necessary permissions
-- Deploy or update the function on AWS Lambda
+This will automatically deploy Lambda functions based on the memory configurations in `services.yaml`. For example, with `[2, 4, 6, 8, 10]`, it will deploy:
+- `ease-query-executor-2gb` (2 GB memory)
+- `ease-query-executor-4gb` (4 GB memory)
+- `ease-query-executor-6gb` (6 GB memory)
+- `ease-query-executor-8gb` (8 GB memory)
+- `ease-query-executor-10gb` (10 GB memory)
+
+The scheduler will automatically select the appropriate Lambda instance based on query resource requirements.
 
 Requirements:
 - AWS credentials configured via `aws configure`
 - boto3 installed: `pip install boto3`
+- pyyaml installed: `pip install pyyaml`
 
 ### 5. Configure Services
 

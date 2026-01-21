@@ -96,23 +96,57 @@ class CostModel:
     def estimate_faas(self, resources: ResourceRequirements,
                       faas_config: Dict) -> CostEstimate:
         """
-        Estimate time and cost for FaaS cluster execution
+        Estimate time and cost for FaaS execution
 
-        Performance model: Parallel execution
-        Cost model: gb_seconds × rate + additional costs
+        Performance model: Parallel execution with instance selection
+        Cost model: gb_seconds × rate
 
         Args:
             resources: Query resource requirements
-            faas_config: FaaS configuration (num_instances, memory, costs, etc.)
+            faas_config: FaaS configuration (memory_sizes_gb list, cost_per_gb_second)
 
         Returns:
             CostEstimate with time, cost, and breakdown
         """
+        # === Select appropriate Lambda instance ===
+
+        # Get Lambda memory sizes
+        memory_sizes = faas_config.get('memory_sizes_gb', [2, 4, 6, 8, 10])
+        memory_sizes = sorted(memory_sizes)
+
+        # Estimate required memory based on data scanned
+        data_scanned_gb = resources.data_scanned / (1024 ** 3)
+        required_memory_gb = max(2, data_scanned_gb * 2)
+
+        # Select smallest memory size that meets requirement
+        selected_memory_gb = None
+        for mem_gb in memory_sizes:
+            if mem_gb >= required_memory_gb:
+                selected_memory_gb = mem_gb
+                break
+
+        # If no size is large enough, use largest
+        if selected_memory_gb is None:
+            selected_memory_gb = memory_sizes[-1]
+
         # === Performance Estimation ===
 
-        # Cluster capacity
-        total_cpu = faas_config.get('total_cpu', 120)
-        total_io = faas_config.get('total_io', 7500)
+        # Lambda CPU and IO scale with memory
+        # Approximate: 1 vCPU per 1.8 GB, IO scales similarly
+        cpu_per_gb = 1.0 / 1.8
+        io_per_gb_mbps = 75
+
+        total_cpu = selected_memory_gb * cpu_per_gb
+        total_io = selected_memory_gb * io_per_gb_mbps
+
+        # Estimate number of parallel invocations
+        num_partitions = 100  # Default partition count
+        max_instances = min(100, int(selected_memory_gb * 10))
+        instances_to_use = min(max_instances, num_partitions)
+
+        # Adjust for parallelism
+        total_cpu *= instances_to_use
+        total_io *= instances_to_use
 
         # I/O time (parallel)
         data_scanned_mb = resources.data_scanned / (1024 * 1024)
@@ -130,11 +164,9 @@ class CostModel:
 
         # === Cost Estimation ===
 
-        num_instances = faas_config.get('num_instances', 100)
-        memory_per_instance_gb = faas_config.get('memory_per_instance_gb', 4)
-        cost_per_gb_second = faas_config.get('cost_per_gb_second', 0.0000002)
+        cost_per_gb_second = faas_config.get('cost_per_gb_second', 0.0000166667)
 
-        gb_seconds = execution_time * memory_per_instance_gb * num_instances
+        gb_seconds = execution_time * selected_memory_gb * instances_to_use
         execution_cost = gb_seconds * cost_per_gb_second
 
         # Additional costs (S3, network, etc.) - simplified
@@ -150,7 +182,9 @@ class CostModel:
                 'cpu': cpu_time,
                 'shuffle': shuffle_time,
                 'execution_cost': execution_cost,
-                'additional_cost': additional_cost
+                'additional_cost': additional_cost,
+                'memory_gb': selected_memory_gb,
+                'instances_to_use': instances_to_use
             }
         )
 

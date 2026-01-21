@@ -103,11 +103,12 @@ class SchedulingServer:
 
         # FaaS executors
         if 'faas' in enabled_set:
-            faas_configs = self.config.get('services.faas', [])
-            for faas_config in faas_configs:
+            faas_config = self.config.get('services.faas', {})
+            if faas_config:
+                # Create a single FaaS executor with memory sizes and pricing
                 service_config = ServiceConfig(
                     service_type=ServiceType.FAAS,
-                    name=faas_config.get('name', 'faas'),
+                    name='faas',
                     config=faas_config
                 )
                 executor = FaaSExecutor(service_config)

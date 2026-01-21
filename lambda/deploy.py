@@ -11,6 +11,7 @@ import tempfile
 import shutil
 import subprocess
 import boto3
+import yaml
 from pathlib import Path
 
 
@@ -104,7 +105,7 @@ def get_or_create_role(iam_client, role_name):
     return response['Role']['Arn']
 
 
-def deploy_function(lambda_client, function_name, zip_path, role_arn):
+def deploy_function(lambda_client, function_name, zip_path, role_arn, memory_mb):
     """Deploy or update Lambda function"""
 
     with open(zip_path, 'rb') as f:
@@ -118,13 +119,19 @@ def deploy_function(lambda_client, function_name, zip_path, role_arn):
         exists = False
 
     if exists:
-        print(f"Updating function: {function_name}")
+        print(f"Updating function: {function_name} ({memory_mb}MB)")
         lambda_client.update_function_code(
             FunctionName=function_name,
             ZipFile=zip_content
         )
+        # Update memory configuration
+        lambda_client.update_function_configuration(
+            FunctionName=function_name,
+            MemorySize=memory_mb,
+            Timeout=900
+        )
     else:
-        print(f"Creating function: {function_name}")
+        print(f"Creating function: {function_name} ({memory_mb}MB)")
         lambda_client.create_function(
             FunctionName=function_name,
             Runtime='python3.11',
@@ -132,38 +139,90 @@ def deploy_function(lambda_client, function_name, zip_path, role_arn):
             Handler='lambda_function.lambda_handler',
             Code={'ZipFile': zip_content},
             Timeout=900,
-            MemorySize=3008,
+            MemorySize=memory_mb,
             Environment={
                 'Variables': {
-                    'DATA_LOCATION': 's3://rush-data/tpch'
+                    'DATA_LOCATION': 's3://ease-data/tpch'
                 }
             }
         )
 
-    print("Deployment completed")
+    print(f"Deployment completed: {function_name}")
+
+
+def load_config():
+    """Load configuration from services.yaml"""
+    # Get config directory (relative to this script)
+    script_dir = Path(__file__).parent
+    config_path = script_dir.parent / 'config' / 'services.yaml'
+
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"Configuration file not found: {config_path}\n"
+            f"Please ensure config/services.yaml exists"
+        )
+
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    # Extract FaaS configuration
+    faas_config = config.get('services', {}).get('faas', {})
+    if not faas_config:
+        raise ValueError("No FaaS configuration found in services.yaml")
+
+    return faas_config
 
 
 def main():
-    function_name = 'rush-query-executor'
-    role_name = f'{function_name}-role'
+    print("Loading configuration from config/services.yaml")
+    try:
+        faas_config = load_config()
+    except Exception as e:
+        print(f"Error loading configuration: {e}")
+        sys.exit(1)
 
-    print(f"Deploying Lambda function: {function_name}")
+    # Get memory sizes from configuration
+    memory_sizes_gb = faas_config.get('memory_sizes_gb', [2, 4, 6, 8, 10])
+
+    # Generate Lambda configurations from memory sizes
+    lambda_configs = []
+    for memory_gb in sorted(memory_sizes_gb):
+        function_name = f'ease-query-executor-{memory_gb}gb'
+        memory_mb = int(memory_gb * 1024)
+        lambda_configs.append((function_name, memory_mb))
+
+    role_name = 'ease-query-executor-role'
+
+    print(f"\nDeploying {len(lambda_configs)} Lambda functions")
+    print(f"Memory configurations: {memory_sizes_gb}")
+    print("=" * 60)
 
     # Initialize AWS clients (uses default profile/region)
     lambda_client = boto3.client('lambda')
     iam_client = boto3.client('iam')
 
-    # Create deployment package
+    # Create deployment package (same code for all functions)
     zip_path = create_deployment_package()
 
-    # Get or create IAM role
+    # Get or create IAM role (shared by all functions)
     role_arn = get_or_create_role(iam_client, role_name)
 
-    # Deploy function
-    deploy_function(lambda_client, function_name, zip_path, role_arn)
+    # Deploy each Lambda function
+    for function_name, memory_mb in lambda_configs:
+        print()
+        deploy_function(lambda_client, function_name, zip_path, role_arn, memory_mb)
 
     # Cleanup
     zip_path.unlink()
+
+    print()
+    print("=" * 60)
+    print(f"All {len(lambda_configs)} Lambda functions deployed successfully!")
+    print()
+    print("Functions:")
+    for function_name, memory_mb in lambda_configs:
+        print(f"  - {function_name}: {memory_mb}MB ({memory_mb / 1024:.0f}GB)")
+
 
 
 if __name__ == '__main__':

@@ -7,6 +7,7 @@ Executes queries in parallel across multiple Lambda instances with data partitio
 """
 
 import time
+import json
 import asyncio
 from typing import Dict, List, Any, Optional
 from .base import BaseExecutor
@@ -26,27 +27,68 @@ class FaaSExecutor(BaseExecutor):
     def __init__(self, config: ServiceConfig):
         super().__init__(config)
 
-        # FaaS-specific configuration
-        self.num_instances = config.config.get('num_instances', 100)
-        self.memory_per_instance_gb = config.config.get('memory_per_instance_gb', 4)
-        self.cpu_per_instance = config.config.get('cpu_per_instance', 1.2)
-        self.io_per_instance_mbps = config.config.get('io_per_instance_mbps', 75)
-        self.cost_per_gb_second = config.config.get('cost_per_gb_second', 0.0000002)
+        # Lambda pricing
+        self.cost_per_gb_second = config.config.get('cost_per_gb_second', 0.0000166667)
 
-        # Lambda function endpoint
-        self.endpoint = config.config.get('endpoint')
-        if not self.endpoint:
-            raise ValueError(f"FaaS executor '{self.name}' missing 'endpoint' configuration")
+        # Lambda memory sizes (in GB)
+        memory_sizes = config.config.get('memory_sizes_gb', [2, 4, 6, 8, 10])
 
-        if self.endpoint.startswith('<'):
+        # Generate Lambda configurations from memory sizes
+        self.lambda_configs = []
+        for memory_gb in sorted(memory_sizes):
+            self.lambda_configs.append({
+                'name': f'lambda-{memory_gb}gb',
+                'function_name': f'ease-query-executor-{memory_gb}gb',
+                'memory_gb': memory_gb
+            })
+
+        if not self.lambda_configs:
             raise ValueError(
-                f"FaaS executor '{self.name}' has placeholder endpoint '{self.endpoint}'. "
-                f"Please configure valid endpoint (e.g., 'https://lambda.us-east-1.amazonaws.com/function')"
+                f"FaaS executor '{self.name}' has no memory configurations. "
+                f"Please specify 'memory_sizes_gb' in config"
             )
 
-        # Cluster total capacity
-        self.total_cpu = self.num_instances * self.cpu_per_instance
-        self.total_io = self.num_instances * self.io_per_instance_mbps
+        print(f"[{self.name}] Initialized with {len(self.lambda_configs)} Lambda configurations:")
+        for cfg in self.lambda_configs:
+            print(f"  - {cfg['name']}: {cfg['memory_gb']}GB")
+
+    def _select_lambda_instance(self, query: Query) -> Dict:
+        """
+        Select appropriate Lambda instance based on query requirements
+
+        Args:
+            query: Query to execute
+
+        Returns:
+            Lambda configuration dict with function_name, memory_gb, etc.
+        """
+        # Get memory requirement from query metadata
+        # If not specified, use a default based on data size
+        required_memory_gb = None
+        if query.metadata:
+            required_memory_gb = query.metadata.get('required_memory_gb')
+
+        # If not specified, estimate based on data scanned
+        if required_memory_gb is None:
+            data_scanned_gb = query.metadata.get('data_scanned', 0) / (1024 ** 3) if query.metadata else 0
+            # Simple heuristic: 2x data size for memory
+            required_memory_gb = max(2, data_scanned_gb * 2)
+
+        # Select smallest Lambda instance that meets requirement
+        selected = None
+        for cfg in self.lambda_configs:
+            if cfg.get('memory_gb', 0) >= required_memory_gb:
+                selected = cfg
+                break
+
+        # If no instance is large enough, use the largest one
+        if selected is None:
+            selected = self.lambda_configs[-1]
+
+        print(f"[{self.name}] Query {query.query_id}: Selected {selected.get('name')} "
+              f"({selected.get('memory_gb')}GB) for {required_memory_gb:.1f}GB requirement")
+
+        return selected
 
     def _allocate_partitions(self, num_partitions: int, num_instances: int) -> List[List[int]]:
         """
@@ -79,7 +121,7 @@ class FaaSExecutor(BaseExecutor):
         return allocation
 
     async def _invoke_lambda(self, query: Query, partition_ids: List[int],
-                            instance_id: int) -> Dict[str, Any]:
+                            instance_id: int, lambda_config: Dict) -> Dict[str, Any]:
         """
         Invoke a single Lambda instance
 
@@ -87,16 +129,17 @@ class FaaSExecutor(BaseExecutor):
             query: Query to execute
             partition_ids: List of partition IDs for this instance
             instance_id: Instance identifier
+            lambda_config: Lambda configuration with function_name
 
         Returns:
             Result from Lambda execution
         """
         try:
-            import aiohttp
+            import boto3
         except ImportError:
             return {
                 'status': 'error',
-                'error': 'aiohttp not installed',
+                'error': 'boto3 not installed',
                 'partition_ids': partition_ids,
                 'instance_id': instance_id
             }
@@ -110,23 +153,27 @@ class FaaSExecutor(BaseExecutor):
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.endpoint,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=300)
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        return result
-                    else:
-                        error_text = await response.text()
-                        return {
-                            'status': 'error',
-                            'error': f"HTTP {response.status}: {error_text}",
-                            'partition_ids': partition_ids,
-                            'instance_id': instance_id
-                        }
+            lambda_client = boto3.client('lambda')
+            function_name = lambda_config.get('function_name')
+
+            response = lambda_client.invoke(
+                FunctionName=function_name,
+                InvocationType='RequestResponse',
+                Payload=json.dumps(payload)
+            )
+
+            # Parse response
+            response_payload = json.loads(response['Payload'].read())
+
+            if response['StatusCode'] == 200:
+                return response_payload
+            else:
+                return {
+                    'status': 'error',
+                    'error': f"Lambda returned status {response['StatusCode']}",
+                    'partition_ids': partition_ids,
+                    'instance_id': instance_id
+                }
 
         except Exception as e:
             return {
@@ -181,27 +228,30 @@ class FaaSExecutor(BaseExecutor):
                 'successful_instances': successful_instances
             }
 
-    def _decide_num_instances(self, query: Query, num_partitions: int) -> int:
+    def _decide_num_instances(self, query: Query, num_partitions: int, lambda_config: Dict) -> int:
         """
-        Decide how many Lambda instances to use for this query
+        Decide how many parallel Lambda invocations to use for this query
 
         This uses a cost model to determine optimal instance count.
-        TODO: Implement actual cost model in next step.
+        For now, we use a simple strategy based on data size and partitions.
 
         Args:
             query: Query to execute
             num_partitions: Number of data partitions
+            lambda_config: Selected Lambda configuration
 
         Returns:
-            Number of instances to use
+            Number of parallel invocations to use
         """
-        # Simple strategy for now: use all available instances up to partition count
-        # TODO: Replace with cost-based model that considers:
-        #   - Query complexity
-        #   - Data size
-        #   - Cost vs performance tradeoff
-        #   - Resource requirements
-        return min(self.num_instances, num_partitions)
+        # Get memory in GB
+        memory_gb = lambda_config.get('memory_gb', 2)
+
+        # Estimate how many instances we can effectively use
+        # Larger memory instances can handle more partitions in parallel
+        max_instances = min(100, memory_gb * 10)
+
+        # Use minimum of max instances and partitions
+        return min(max_instances, num_partitions)
 
     async def execute(self, query: Query) -> ExecutionResult:
         """
@@ -216,22 +266,25 @@ class FaaSExecutor(BaseExecutor):
         start_time = time.time()
 
         try:
+            # Select appropriate Lambda instance based on query requirements
+            lambda_config = self._select_lambda_instance(query)
+
             # Get partition information from query metadata
             num_partitions = query.metadata.get('num_partitions', 100) if query.metadata else 100
 
             # Determine how many instances to use based on cost model
-            instances_to_use = self._decide_num_instances(query, num_partitions)
+            instances_to_use = self._decide_num_instances(query, num_partitions, lambda_config)
 
             # Allocate partitions to instances
             partition_allocation = self._allocate_partitions(num_partitions, instances_to_use)
 
-            print(f"[{self.name}] Query {query.query_id}: Using {instances_to_use} instances "
-                  f"for {num_partitions} partitions")
+            print(f"[{self.name}] Query {query.query_id}: Using {instances_to_use} parallel invocations "
+                  f"of {lambda_config.get('name')} for {num_partitions} partitions")
 
             # Invoke all Lambda instances in parallel
             tasks = []
             for instance_id, partition_ids in enumerate(partition_allocation):
-                task = self._invoke_lambda(query, partition_ids, instance_id)
+                task = self._invoke_lambda(query, partition_ids, instance_id, lambda_config)
                 tasks.append(task)
 
             # Wait for all instances to complete
@@ -245,8 +298,8 @@ class FaaSExecutor(BaseExecutor):
             execution_time = aggregated['execution_time']
 
             # Calculate cost: instances × execution_time × memory × rate
-            cost = (instances_to_use * execution_time * self.memory_per_instance_gb *
-                   self.cost_per_gb_second)
+            memory_gb = lambda_config.get('memory_gb', 2)
+            cost = instances_to_use * execution_time * memory_gb * self.cost_per_gb_second
 
             # Determine status
             if aggregated['status'] == 'success':
@@ -276,7 +329,9 @@ class FaaSExecutor(BaseExecutor):
                     'instances_used': instances_to_use,
                     'successful_instances': aggregated['successful_instances'],
                     'num_partitions': num_partitions,
-                    'failed_instances': aggregated.get('failed_instances', [])
+                    'failed_instances': aggregated.get('failed_instances', []),
+                    'lambda_config': lambda_config.get('name'),
+                    'memory_gb': memory_gb
                 }
             )
 
@@ -297,6 +352,8 @@ class FaaSExecutor(BaseExecutor):
         """
         FaaS cost model: gb_seconds × rate
 
+        Uses the appropriate Lambda instance based on query requirements.
+
         Args:
             query: Query object
             estimated_time: Estimated execution time (seconds)
@@ -304,14 +361,23 @@ class FaaSExecutor(BaseExecutor):
         Returns:
             Estimated cost in dollars
         """
-        gb_seconds = estimated_time * self.memory_per_instance_gb * self.num_instances
+        # Select appropriate Lambda instance
+        lambda_config = self._select_lambda_instance(query)
+        memory_gb = lambda_config.get('memory_gb', 2)
+
+        # Estimate number of parallel invocations
+        num_partitions = query.metadata.get('num_partitions', 100) if query.metadata else 100
+        instances_to_use = self._decide_num_instances(query, num_partitions, lambda_config)
+
+        # Calculate cost
+        gb_seconds = estimated_time * memory_gb * instances_to_use
         return gb_seconds * self.cost_per_gb_second
 
     def get_capacity(self) -> Dict[str, float]:
-        """Get FaaS cluster capacity"""
+        """Get FaaS capacity information"""
         return {
-            'num_instances': self.num_instances,
-            'total_cpu': self.total_cpu,
-            'total_io': self.total_io,
-            'memory_per_instance_gb': self.memory_per_instance_gb
+            'num_lambda_configs': len(self.lambda_configs),
+            'min_memory_gb': self.lambda_configs[0].get('memory_gb') if self.lambda_configs else 0,
+            'max_memory_gb': self.lambda_configs[-1].get('memory_gb') if self.lambda_configs else 0,
+            'cost_per_gb_second': self.cost_per_gb_second
         }
