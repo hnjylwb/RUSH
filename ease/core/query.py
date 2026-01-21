@@ -15,20 +15,32 @@ class ResourceRequirements:
     Used by the cost model to estimate execution time and cost on different services.
 
     OLAP queries typically execute in multiple stages (e.g., scan, join, aggregate).
-    Each stage has different CPU and I/O requirements.
+    Each stage can be visualized as a rectangle in a time-utilization coordinate system:
+    - X-axis: time (duration)
+    - Y-axis: utilization (0-1)
+    - Rectangle area: cpu_time (for CPU) or data throughput (for IO)
 
     Attributes:
-        cpu_time: CPU time per stage (seconds), list for multi-stage queries
+        cpu_util: CPU utilization per stage (0-1), list for multi-stage queries
+        io_util: I/O utilization per stage (0-1), list for multi-stage queries
+        duration: Duration per stage (seconds), list for multi-stage queries
+        cpu_time: CPU time per stage (seconds), list - equals cpu_util × duration
         data_scanned: Data scanned per stage (bytes), list for multi-stage queries
         memory_required: Peak memory requirement (bytes), single value for entire query
     """
-    cpu_time: List[float]  # CPU time for each stage
-    data_scanned: List[float]  # Data scanned for each stage
+    cpu_util: List[float]  # CPU utilization for each stage (0-1)
+    io_util: List[float]  # I/O utilization for each stage (0-1)
+    duration: List[float]  # Duration for each stage (seconds)
+    cpu_time: List[float]  # CPU time for each stage (seconds)
+    data_scanned: List[float]  # Data scanned for each stage (bytes)
     memory_required: float  # Peak memory requirement in bytes
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
         return {
+            'cpu_util': self.cpu_util,
+            'io_util': self.io_util,
+            'duration': self.duration,
             'cpu_time': self.cpu_time,
             'data_scanned': self.data_scanned,
             'memory_required': self.memory_required
@@ -47,7 +59,7 @@ class ResourceRequirements:
     @property
     def num_stages(self) -> int:
         """Number of execution stages"""
-        return len(self.cpu_time)
+        return len(self.duration)
 
 
 @dataclass

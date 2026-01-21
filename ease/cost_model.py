@@ -15,11 +15,9 @@ class CostEstimate:
     Attributes:
         execution_time: Estimated execution time (seconds)
         cost: Estimated cost (dollars)
-        breakdown: Detailed breakdown of time components
     """
     execution_time: float
     cost: float
-    breakdown: Dict[str, float]
 
 
 class CostModel:
@@ -44,74 +42,61 @@ class CostModel:
         """
         Estimate time and cost for VM execution
 
-        Performance model: Sequential multi-stage execution (I/O → CPU per stage)
-        Cost model: time × hourly_rate × utilization
+        Performance model: Sequential multi-stage execution
+        Each stage: duration is fixed, actual time depends on resource capacity
 
         Args:
             resources: Query resource requirements (multi-stage)
-            vm_config: VM configuration (cpu_cores, io_bandwidth, cost_per_hour, etc.)
+            vm_config: VM configuration (cpu_cores, io_bandwidth_mbps, cost_per_hour, etc.)
 
         Returns:
-            CostEstimate with time, cost, and breakdown
+            CostEstimate with time and cost
         """
         # === Performance Estimation ===
 
-        io_bandwidth_mbs = vm_config['io_bandwidth_mbps']
-        network_bandwidth_mbs = vm_config['network_bandwidth_mbps']
+        io_bandwidth_mbps = vm_config['io_bandwidth_mbps']
+        cpu_cores = vm_config['cpu_cores']
 
         # Estimate execution time for each stage
-        stage_times = []
-        total_io_time = 0.0
-        total_cpu_time = 0.0
-        total_shuffle_time = 0.0
+        total_time = 0.0
 
         for stage_idx in range(resources.num_stages):
-            # I/O time for this stage
+            # CPU time: work = cpu_time, capacity = cpu_cores
+            # Time needed = cpu_time / cpu_cores
+            cpu_time_needed = resources.cpu_time[stage_idx] / cpu_cores
+
+            # I/O time: work = data_scanned, capacity = io_bandwidth
+            # Time needed = data_scanned / io_bandwidth
             data_scanned_mb = resources.data_scanned[stage_idx] / (1024 * 1024)
-            io_time = data_scanned_mb / io_bandwidth_mbs
+            io_time_needed = data_scanned_mb / io_bandwidth_mbps
 
-            # CPU time for this stage (given)
-            cpu_time = resources.cpu_time[stage_idx]
-
-            # Shuffle time (data transfer between stages)
-            # Estimate shuffle data as a fraction of scanned data
-            shuffle_ratio = 0.1 + (stage_idx / resources.num_stages) * 0.2
-            shuffle_data_mb = data_scanned_mb * shuffle_ratio
-            shuffle_time = shuffle_data_mb / network_bandwidth_mbs
-
-            stage_time = io_time + cpu_time + shuffle_time
-            stage_times.append(stage_time)
-
-            total_io_time += io_time
-            total_cpu_time += cpu_time
-            total_shuffle_time += shuffle_time
-
-        # Sequential execution across stages
-        execution_time = sum(stage_times)
+            # Stage time is the max of CPU and I/O (they can overlap)
+            stage_time = max(cpu_time_needed, io_time_needed)
+            total_time += stage_time
 
         # === Cost Estimation ===
 
         cost_per_hour = vm_config['cost_per_hour']
         cost_per_second = cost_per_hour / 3600.0
 
-        # Resource utilization factor (based on memory usage)
+        # Resource utilization factor: max of CPU and IO utilization across all stages
+        max_cpu_util = max(resources.cpu_util)
+        max_io_util = max(resources.io_util)
+        resource_utilization = max(max_cpu_util, max_io_util)
+
+        # Memory utilization factor
         memory_gb = resources.memory_required / (1024 ** 3)
         vm_memory_gb = vm_config['memory_gb']
-        utilization = min(1.0, 0.3 + (memory_gb / vm_memory_gb) * 0.7)
+        memory_utilization = min(1.0, memory_gb / vm_memory_gb)
 
-        cost = execution_time * cost_per_second * utilization
+        # Overall utilization: max of resource and memory utilization
+        utilization = max(resource_utilization, memory_utilization)
+
+        cost = total_time * cost_per_second * utilization
 
         return CostEstimate(
-            execution_time=execution_time,
-            cost=cost,
-            breakdown={
-                'io': total_io_time,
-                'cpu': total_cpu_time,
-                'shuffle': total_shuffle_time,
-                'utilization': utilization,
-                'num_stages': resources.num_stages,
-                'stage_times': stage_times
-            }
+            execution_time=total_time,
+            cost=cost
         )
 
     def estimate_faas(self, resources: ResourceRequirements,
@@ -119,15 +104,15 @@ class CostModel:
         """
         Estimate time and cost for FaaS execution
 
-        Performance model: Parallel execution across stages with instance selection
-        Cost model: gb_seconds × rate
+        Performance model: Parallel execution with instance selection
+        Each stage: work is distributed across multiple instances
 
         Args:
             resources: Query resource requirements (multi-stage)
             faas_config: FaaS configuration (memory_sizes_gb list, cost_per_gb_second)
 
         Returns:
-            CostEstimate with time, cost, and breakdown
+            CostEstimate with time and cost
         """
         # === Select appropriate Lambda instance ===
 
@@ -154,52 +139,40 @@ class CostModel:
         cpu_per_gb = 1.0 / 1.8
         io_per_gb_mbps = 75
 
-        total_cpu = selected_memory_gb * cpu_per_gb
-        total_io = selected_memory_gb * io_per_gb_mbps
+        single_instance_cpu = selected_memory_gb * cpu_per_gb
+        single_instance_io = selected_memory_gb * io_per_gb_mbps
 
         # Estimate number of parallel invocations
         num_partitions = 100  # Default partition count
         max_instances = min(100, int(selected_memory_gb * 10))
         instances_to_use = min(max_instances, num_partitions)
 
-        # Adjust for parallelism
-        total_cpu *= instances_to_use
-        total_io *= instances_to_use
+        # Total capacity across all instances
+        total_cpu = single_instance_cpu * instances_to_use
+        total_io = single_instance_io * instances_to_use
 
         # Estimate execution time for each stage
-        stage_times = []
-        total_io_time = 0.0
-        total_cpu_time = 0.0
-        total_shuffle_time = 0.0
+        total_time = 0.0
 
         for stage_idx in range(resources.num_stages):
-            # I/O time (parallel)
+            # CPU time: work = cpu_time, capacity = total_cpu
+            # Time needed = cpu_time / total_cpu
+            cpu_time_needed = resources.cpu_time[stage_idx] / total_cpu
+
+            # I/O time: work = data_scanned, capacity = total_io
+            # Time needed = data_scanned / total_io
             data_scanned_mb = resources.data_scanned[stage_idx] / (1024 * 1024)
-            io_time = data_scanned_mb / total_io
+            io_time_needed = data_scanned_mb / total_io
 
-            # CPU time (parallel)
-            cpu_time = resources.cpu_time[stage_idx] / total_cpu
-
-            # Shuffle time (data transfer between stages)
-            shuffle_ratio = 0.1 + (stage_idx / resources.num_stages) * 0.2
-            shuffle_data_mb = data_scanned_mb * shuffle_ratio
-            shuffle_time = shuffle_data_mb / total_io * 2  # write + read
-
-            stage_time = io_time + cpu_time + shuffle_time
-            stage_times.append(stage_time)
-
-            total_io_time += io_time
-            total_cpu_time += cpu_time
-            total_shuffle_time += shuffle_time
-
-        # Parallel execution across stages
-        execution_time = sum(stage_times)
+            # Stage time is the max of CPU and I/O
+            stage_time = max(cpu_time_needed, io_time_needed)
+            total_time += stage_time
 
         # === Cost Estimation ===
 
         cost_per_gb_second = faas_config['cost_per_gb_second']
 
-        gb_seconds = execution_time * selected_memory_gb * instances_to_use
+        gb_seconds = total_time * selected_memory_gb * instances_to_use
         execution_cost = gb_seconds * cost_per_gb_second
 
         # Additional costs (S3, network, etc.)
@@ -208,19 +181,8 @@ class CostModel:
         cost = execution_cost + additional_cost
 
         return CostEstimate(
-            execution_time=execution_time,
-            cost=cost,
-            breakdown={
-                'io': total_io_time,
-                'cpu': total_cpu_time,
-                'shuffle': total_shuffle_time,
-                'execution_cost': execution_cost,
-                'additional_cost': additional_cost,
-                'memory_gb': selected_memory_gb,
-                'instances_to_use': instances_to_use,
-                'num_stages': resources.num_stages,
-                'stage_times': stage_times
-            }
+            execution_time=total_time,
+            cost=cost
         )
 
     def estimate_qaas(self, resources: ResourceRequirements,
@@ -257,12 +219,5 @@ class CostModel:
 
         return CostEstimate(
             execution_time=execution_time,
-            cost=cost,
-            breakdown={
-                'base_latency': base_latency,
-                'scan': scan_time,
-                'complexity_factor': complexity_factor,
-                'data_scanned_tb': total_data_scanned_tb,
-                'num_stages': resources.num_stages
-            }
+            cost=cost
         )

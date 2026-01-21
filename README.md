@@ -25,16 +25,10 @@ Optional arguments:
 
 If you want to use VM executors, deploy workers to your VM nodes.
 
-For auto-registration with the scheduler (recommended for auto-scaling):
+For auto-registration with the scheduler:
 
 ```bash
-python run_vm_worker.py --scheduler http://localhost:8080
-```
-
-Or start without auto-registration (requires manual configuration in config/services.yaml):
-
-```bash
-python run_vm_worker.py --host 0.0.0.0 --port 8081
+python run_vm_worker.py --scheduler http://<ip>:8080
 ```
 
 Optional arguments:
