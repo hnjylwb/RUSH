@@ -4,7 +4,10 @@ Cost Model
 
 from typing import Dict
 from dataclasses import dataclass
+import pickle
+from pathlib import Path
 from .core import ResourceRequirements
+from .feature_extractor import QaaSFeatureExtractor
 
 
 @dataclass
@@ -36,6 +39,39 @@ class CostModel:
             config: Model configuration
         """
         self.config = config or {}
+
+        # Initialize feature extractors
+        self.qaas_feature_extractor = QaaSFeatureExtractor(config)
+
+        # Load QaaS regression model if available
+        self.qaas_model = None
+        self.qaas_model_metadata = {}
+        qaas_model_path = self.config.get('qaas_model_path')
+        if qaas_model_path:
+            model_path = Path(qaas_model_path)
+            if model_path.exists():
+                try:
+                    with open(model_path, 'rb') as f:
+                        model_data = pickle.load(f)
+
+                    # Extract model and metadata
+                    if isinstance(model_data, dict):
+                        self.qaas_model = model_data.get('model')
+                        self.qaas_model_metadata = {
+                            'feature_names': model_data.get('feature_names', []),
+                            'model_type': model_data.get('model_type', 'Unknown')
+                        }
+                        print(f"Loaded {self.qaas_model_metadata['model_type']} from {model_path}")
+                        print(f"Expected {len(self.qaas_model_metadata['feature_names'])} features")
+                    else:
+                        # Legacy: model saved directly without metadata
+                        self.qaas_model = model_data
+                        print(f"Loaded model from {model_path} (legacy format)")
+
+                except Exception as e:
+                    print(f"Warning: Failed to load QaaS model: {e}")
+            else:
+                print(f"Warning: QaaS model path does not exist: {model_path}")
 
     def estimate_vm(self, resources: ResourceRequirements,
                     vm_config: Dict) -> CostEstimate:
@@ -186,35 +222,42 @@ class CostModel:
         )
 
     def estimate_qaas(self, resources: ResourceRequirements,
-                      qaas_config: Dict) -> CostEstimate:
+                      qaas_config: Dict, sql: str = None) -> CostEstimate:
         """
         Estimate time and cost for QaaS execution
 
-        Performance model: Data-scan based with complexity factor
-        Cost model: data_scanned × rate_per_tb
+        Performance model: Regression model based on query features
+        Cost model: data_scanned * rate_per_tb
 
         Args:
             resources: Query resource requirements (multi-stage)
-            qaas_config: QaaS configuration (scan_speed, cost_per_tb, etc.)
+            qaas_config: QaaS configuration (cost_per_tb, etc.)
+            sql: Optional SQL query string for plan-based feature extraction
 
         Returns:
-            CostEstimate with time, cost, and breakdown
+            CostEstimate with time and cost
+
+        Raises:
+            RuntimeError: If QaaS model is not loaded
         """
         # === Performance Estimation ===
 
-        base_latency = qaas_config['base_latency']
-        scan_speed = qaas_config['scan_speed_tb_per_sec']
-        total_data_scanned_tb = resources.total_data_scanned / (1024 ** 4)
-        scan_time = total_data_scanned_tb / scan_speed
+        if self.qaas_model is None:
+            raise RuntimeError(
+                "QaaS model not loaded. Please provide 'qaas_model_path' in config "
+                "and ensure the model file exists."
+            )
 
-        # Complexity factor (based on number of stages and CPU requirements)
-        complexity_factor = 1.0 + (resources.num_stages / 10) + (resources.total_cpu_time / 100)
+        # Extract features using the feature extractor (with SQL if provided)
+        features = self.qaas_feature_extractor.extract_features(resources, sql)
 
-        execution_time = (base_latency + scan_time) * complexity_factor
+        # Predict execution time using the model
+        execution_time = self.qaas_model.predict([features])[0]
 
         # === Cost Estimation ===
 
         cost_per_tb = qaas_config['cost_per_tb']
+        total_data_scanned_tb = resources.total_data_scanned / (1024 ** 4)
         cost = total_data_scanned_tb * cost_per_tb
 
         return CostEstimate(

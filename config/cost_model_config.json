@@ -1,0 +1,5 @@
+{
+  "qaas_model_path": "models/model.pkl",
+  "duckdb_schema_path": "models/schema.db",
+  "use_plan_features": true
+}
