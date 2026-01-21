@@ -2,7 +2,7 @@
 Scheduler
 
 Resource-aware scheduling within each service type.
-Implements Algorithm 1 from the paper.
+Implements resource-aware intra-service scheduling algorithm.
 """
 
 import asyncio
@@ -128,7 +128,7 @@ class Scheduler:
     Service Scheduler
 
     Implements resource-aware scheduling within each service type.
-    Uses Algorithm 1 from the paper for scheduling decisions.
+    Uses greedy algorithm for scheduling decisions based on compatibility scoring.
     """
 
     def __init__(self, executors: Dict[ServiceType, List[BaseExecutor]],
@@ -242,7 +242,11 @@ class Scheduler:
         """
         Schedule queries for a specific service type
 
-        Implements Algorithm 1 from the paper.
+        Implements resource-aware scheduling algorithm:
+        1. Identify feasible queries that fit in remaining capacity
+        2. For each feasible query, compute compatibility score
+        3. Select query with highest score
+        4. Allocate resources and repeat until no more queries fit
 
         Args:
             service_type: Service type to schedule
@@ -270,11 +274,10 @@ class Scheduler:
             state = self.executor_states[executor_id]
             scheduled_for_executor = []
 
-            # Algorithm 1: Resource-Aware Intra-Service Scheduling
-            # Line 1: S ← ∅
-            # (scheduled_for_executor serves as S)
+            # Initialize empty schedule set
+            # scheduled_for_executor will store queries selected for execution
 
-            # Line 2: F ← {q ∈ Q | r_q <= c_remain}
+            # Build feasible set: queries whose resource demand fits in remaining capacity
             feasible = []
             for query in queue:
                 if query.query_id in self.query_demands:
@@ -282,31 +285,31 @@ class Scheduler:
                     if state.can_fit(demand):
                         feasible.append(query)
 
-            # Line 3-9: while F ≠ ∅
+            # Greedy selection loop: while feasible set is not empty
             while feasible:
-                # Line 4-5: foreach q ∈ F, compute score(q)
+                # Compute compatibility score for each feasible query
                 scores = {}
                 for query in feasible:
                     demand = self.query_demands[query.query_id]
                     scores[query.query_id] = state.compute_score(demand)
 
-                # Line 6: q* ← argmax score(q)
+                # Select query with highest score
                 best_query_id = max(scores, key=scores.get)
                 best_query = next(q for q in feasible if q.query_id == best_query_id)
                 best_demand = self.query_demands[best_query_id]
 
-                # Line 7: S ← S ∪ {q*}
+                # Add to schedule
                 scheduled_for_executor.append(best_query)
                 scheduled.append((best_query, executor_id))
 
-                # Line 8: c_remain ← c_remain - r_q*
+                # Allocate resources: reduce remaining capacity
                 state.allocate(best_demand)
                 state.running_queries.append(best_query)
 
                 # Remove from queue
                 queue.remove(best_query)
 
-                # Line 9: F ← {q ∈ F \ {q*} | r_q <= c_remain}
+                # Update feasible set: remove selected query and queries that no longer fit
                 feasible = []
                 for query in queue:
                     if query.query_id in self.query_demands:
@@ -314,7 +317,7 @@ class Scheduler:
                         if state.can_fit(demand):
                             feasible.append(query)
 
-        # Line 10: return S
+        # Return scheduled queries
         return scheduled
 
     async def schedule_and_execute(self, service_type: ServiceType) -> List[ExecutionResult]:
@@ -322,7 +325,7 @@ class Scheduler:
         Schedule and execute queries for a specific service type
 
         This is the main entry point that:
-        1. Runs the scheduling algorithm (Algorithm 1)
+        1. Runs the resource-aware scheduling algorithm
         2. Submits scheduled queries to executors
         3. Collects execution results
         4. Releases resources immediately after each query completes

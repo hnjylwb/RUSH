@@ -383,6 +383,14 @@ class SchedulingServer:
             best_score = float('inf')
             estimates = {}
 
+            # Get routing parameters from config
+            cost_weight = self.config.config.get('router', {}).get('cost_weight', 1.0)
+            load_weights = self.config.config.get('router', {}).get('load_weights', {
+                'vm': 0.1,
+                'faas': 0.05,
+                'qaas': 0.02
+            })
+
             for service_type in self.executors.keys():
                 service_config = self.executors[service_type].config.config
 
@@ -398,11 +406,15 @@ class SchedulingServer:
 
                 estimates[service_type] = estimate
 
-                # Calculate score: time + cost_weight * cost + load_penalty
+                # Calculate score: (time × cost^weight) × (1 + load_weight × queue_size)
                 queue_size = self.scheduler.get_queue_size(service_type)
-                cost_weight = 1.0
-                load_weight = 0.1
-                score = estimate.execution_time + cost_weight * estimate.cost + load_weight * queue_size
+
+                # Get service-specific load weight
+                service_name = service_type.value.lower()
+                load_weight = load_weights.get(service_name, 0.1)
+
+                # New scoring formula
+                score = (estimate.execution_time * (estimate.cost ** cost_weight)) * (1 + load_weight * queue_size)
 
                 if score < best_score:
                     best_score = score

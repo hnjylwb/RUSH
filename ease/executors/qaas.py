@@ -7,6 +7,7 @@ Example: AWS Athena, BigQuery, Snowflake
 import time
 import asyncio
 from typing import Dict
+import sqlglot
 from .base import BaseExecutor
 from ..core import Query, ExecutionResult, ExecutionStatus, ServiceConfig
 
@@ -66,11 +67,21 @@ class QaaSExecutor(BaseExecutor):
                     error="AWS Athena client not initialized (boto3 not installed)"
                 )
 
+            # Transform SQL using sqlglot for semantic normalization
+            # This ensures consistent SQL dialect for Athena
+            try:
+                # Parse SQL and transpile to Athena dialect
+                transformed_sql = sqlglot.transpile(query.sql, read='duckdb', write='athena')[0]
+                print(f"[{self.name}] Query {query.query_id}: SQL transformed for Athena")
+            except Exception as e:
+                print(f"[{self.name}] Query {query.query_id}: SQL transformation failed, using original SQL: {e}")
+                transformed_sql = query.sql
+
             # Start query execution
             print(f"[{self.name}] Query {query.query_id}: Submitting to Athena")
 
             response = self.athena_client.start_query_execution(
-                QueryString=query.sql,
+                QueryString=transformed_sql,
                 QueryExecutionContext={'Database': self.database},
                 ResultConfiguration={'OutputLocation': self.output_location}
             )

@@ -18,9 +18,9 @@ class Rescheduler:
 
     Responsibilities:
     - Monitor query waiting times in each service queue
-    - Identify queries eligible for migration (Formula 16)
-    - Estimate waiting times based on resource usage (Formula 19)
-    - Select optimal migration target (Formula 20)
+    - Identify queries eligible for migration based on wait time threshold
+    - Estimate waiting times based on resource usage
+    - Select optimal migration target based on combined wait time and cost
     - Prevent ping-pong migrations
     """
 
@@ -40,11 +40,11 @@ class Rescheduler:
         self.service_configs = service_configs
         self.config = config or {}
 
-        # Migration parameters (Formula 16)
+        # Migration parameters
         self.gamma = self.config.get('gamma', 1.0)  # γ: wait time multiplier
         self.tau = self.config.get('tau', 5.0)       # τ: minimum delay bound
 
-        # Cost weight for migration decision (Formula 20)
+        # Cost weight for migration decision
         self.alpha = self.config.get('alpha', 1.0)   # α: cost weight
 
         # Track query submission times and migration history
@@ -61,9 +61,9 @@ class Rescheduler:
         Check queues and migrate queries if needed
 
         Implements:
-        - Formula 16: Migratable query identification
-        - Formula 19: Waiting time estimation
-        - Formula 20: Migration target selection
+        - Migration eligibility: Check if wait time exceeds threshold
+        - Waiting time estimation: Estimate resource-based wait time
+        - Target selection: Select service with best wait + execution cost
         """
         migrations = []
 
@@ -72,7 +72,7 @@ class Rescheduler:
             if not queue:
                 continue
 
-            # Estimate waiting time for this service (Formula 19)
+            # Estimate waiting time for this service
             waiting_time = self._estimate_waiting_time(service_type)
 
             # Check each query in the queue
@@ -84,9 +84,9 @@ class Rescheduler:
                 # Calculate actual waiting time
                 current_wait = time.time() - self.query_submit_times[query.query_id]
 
-                # Check if query is eligible for migration (Formula 16)
+                # Check if query is eligible for migration
                 if self._is_migratable(query, service_type, current_wait):
-                    # Find best migration target (Formula 20)
+                    # Find best migration target
                     target_service = self._select_migration_target(
                         query, service_type, waiting_time
                     )
@@ -101,9 +101,13 @@ class Rescheduler:
     def _is_migratable(self, query: Query, service_type: ServiceType,
                       current_wait: float) -> bool:
         """
-        Check if query is eligible for migration (Formula 16)
+        Check if query is eligible for migration
 
-        W_q^(s) > max(γ · T̂_q,s, τ)
+        Migration criterion: W_q^(s) > max(γ · T̂_q,s, τ)
+
+        Query is eligible if current wait time exceeds the maximum of:
+        - γ times the estimated execution time (proportional threshold)
+        - τ minimum delay bound (absolute threshold)
 
         Args:
             query: Query to check
@@ -130,16 +134,18 @@ class Rescheduler:
 
         estimated_time = query.estimated_time if query.estimated_time else 0.0
 
-        # Apply Formula 16: W_q^(s) > max(γ · T̂_q,s, τ)
+        # Apply migration criterion: W_q^(s) > max(γ · T̂_q,s, τ)
         threshold = max(self.gamma * estimated_time, self.tau)
 
         return current_wait > threshold
 
     def _estimate_waiting_time(self, service_type: ServiceType) -> float:
         """
-        Estimate waiting time for a service (Formula 19)
+        Estimate waiting time for a service
 
-        Ŵ^(s) = max_{i=1,...,k} (Σ_{q∈Q^(s)} Σ_{j=1}^t R̂_q^(s)[i,j] + Σ_{j=1}^t Ĉ_used^(s)[i,j]) / c_capacity^(s)[i] · Δt
+        Estimates waiting time based on resource demand from queued and running queries:
+        Ŵ^(s) = max over all resources of:
+                 (queued demand + used capacity) / resource capacity × time slot
 
         Args:
             service_type: Service type to estimate
@@ -196,9 +202,15 @@ class Rescheduler:
     def _select_migration_target(self, query: Query, current_service: ServiceType,
                                  current_wait: float) -> Optional[ServiceType]:
         """
-        Select optimal migration target service (Formula 20)
+        Select optimal migration target service
 
-        s* = argmin_{s∈S} (Ŵ^(s) + T̂_q,s) · M̂_q,s^α
+        Selection criterion: s* = argmin over all services of:
+                            (Ŵ^(s) + T̂_q,s) · M̂_q,s^α
+
+        Selects service that minimizes the weighted sum of:
+        - Wait time: Ŵ^(s) (estimated waiting time in target service)
+        - Execution time: T̂_q,s (estimated execution time)
+        - Cost penalty: M̂_q,s^α (cost raised to power α)
 
         Args:
             query: Query to migrate
@@ -223,7 +235,7 @@ class Rescheduler:
 
         # Evaluate all available services
         for service_type in [ServiceType.VM, ServiceType.FAAS, ServiceType.QAAS]:
-            # Estimate waiting time for this service (Formula 19)
+            # Estimate waiting time for this service
             waiting_time = self._estimate_waiting_time(service_type)
 
             # Get service configuration
@@ -239,7 +251,7 @@ class Rescheduler:
             else:
                 continue
 
-            # Calculate score using Formula 20: (Ŵ^(s) + T̂_q,s) · M̂_q,s^α
+            # Calculate score: (Ŵ^(s) + T̂_q,s) · M̂_q,s^α
             score = (waiting_time + estimate.execution_time) * (estimate.cost ** self.alpha)
 
             if score < best_score:
