@@ -86,7 +86,7 @@ class SchedulingServer:
     def _init_executors(self):
         """Initialize executors from configuration"""
         # Get enabled service types
-        enabled_services = self.config.get('enabled_services', ['vm', 'faas', 'qaas'])
+        enabled_services = self.config['enabled_services']
         enabled_set = set(enabled_services)
 
         # VM executors

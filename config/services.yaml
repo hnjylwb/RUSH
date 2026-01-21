@@ -25,3 +25,5 @@ services:
     - name: "qaas"
       cost_per_tb: 5.0
       max_concurrent_queries: 30
+      scan_speed_tb_per_sec: 0.5
+      base_latency: 5.0

@@ -28,10 +28,10 @@ class FaaSExecutor(BaseExecutor):
         super().__init__(config)
 
         # Lambda pricing
-        self.cost_per_gb_second = config.config.get('cost_per_gb_second', 0.0000166667)
+        self.cost_per_gb_second = config.config['cost_per_gb_second']
 
         # Lambda memory sizes (in GB)
-        memory_sizes = config.config.get('memory_sizes_gb', [2, 4, 6, 8, 10])
+        memory_sizes = config.config['memory_sizes_gb']
 
         # Generate Lambda configurations from memory sizes
         self.lambda_configs = []

@@ -29,13 +29,13 @@ class VMExecutor(BaseExecutor):
         super().__init__(config)
 
         # VM-specific configuration
-        self.cpu_cores = config.config.get('cpu_cores', 32)
-        self.memory_gb = config.config.get('memory_gb', 128)
-        self.io_bandwidth_mbps = config.config.get('io_bandwidth_mbps', 1250)
-        self.cost_per_hour = config.config.get('cost_per_hour', 1.536)
+        self.cpu_cores = config.config['cpu_cores']
+        self.memory_gb = config.config['memory_gb']
+        self.io_bandwidth_mbps = config.config['io_bandwidth_mbps']
+        self.cost_per_hour = config.config['cost_per_hour']
 
         # Endpoint configuration
-        endpoint_config = config.config.get('endpoint')
+        endpoint_config = config.config['endpoint']
         if not endpoint_config:
             raise ValueError(f"VM executor '{self.name}' missing 'endpoint' configuration")
 

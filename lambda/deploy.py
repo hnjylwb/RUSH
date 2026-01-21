@@ -182,7 +182,7 @@ def main():
         sys.exit(1)
 
     # Get memory sizes from configuration
-    memory_sizes_gb = faas_config.get('memory_sizes_gb', [2, 4, 6, 8, 10])
+    memory_sizes_gb = faas_config['memory_sizes_gb']
 
     # Generate Lambda configurations from memory sizes
     lambda_configs = []

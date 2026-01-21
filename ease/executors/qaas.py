@@ -25,10 +25,10 @@ class QaaSExecutor(BaseExecutor):
         super().__init__(config)
 
         # QaaS-specific configuration
-        self.cost_per_tb = config.config.get('cost_per_tb', 5.0)
-        self.max_concurrent_queries = config.config.get('max_concurrent_queries', 30)
-        self.scan_speed_tb_per_sec = config.config.get('scan_speed_tb_per_sec', 0.5)
-        self.base_latency = config.config.get('base_latency', 5.0)
+        self.cost_per_tb = config.config['cost_per_tb']
+        self.max_concurrent_queries = config.config['max_concurrent_queries']
+        self.scan_speed_tb_per_sec = config.config['scan_speed_tb_per_sec']
+        self.base_latency = config.config['base_latency']
 
         # AWS Athena configuration (optional)
         self.database = config.config.get('database', 'default')
