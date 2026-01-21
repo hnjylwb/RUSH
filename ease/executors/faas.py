@@ -120,10 +120,42 @@ class FaaSExecutor(BaseExecutor):
 
         return allocation
 
+    def _rewrite_sql_for_partitions(self, sql: str, partition_ids: List[int],
+                                    table_name: str, data_location: str) -> str:
+        """
+        Rewrite SQL query to read from specific partitions
+
+        Replaces table references with read_parquet() calls for assigned partitions.
+
+        Args:
+            sql: Original SQL query
+            partition_ids: List of partition IDs to process
+            table_name: Table name to replace (e.g., 'lineitem')
+            data_location: Base S3 path to data (e.g., 's3://bucket/table')
+
+        Returns:
+            Rewritten SQL that reads from specific partition files
+        """
+        # Build partition file paths
+        partition_files = [f"{data_location}/partition_{pid}.parquet" for pid in partition_ids]
+
+        # Create DuckDB read_parquet expression
+        if len(partition_files) == 1:
+            table_expr = f"read_parquet('{partition_files[0]}')"
+        else:
+            files_str = ", ".join([f"'{f}'" for f in partition_files])
+            table_expr = f"read_parquet([{files_str}])"
+
+        # Replace table reference with partition file expression
+        # Match 'FROM table_name' and replace with 'FROM (read_parquet(...))'
+        rewritten_sql = sql.replace(f'FROM {table_name}', f'FROM {table_expr} AS {table_name}')
+
+        return rewritten_sql
+
     async def _invoke_lambda(self, query: Query, partition_ids: List[int],
                             instance_id: int, lambda_config: Dict) -> Dict[str, Any]:
         """
-        Invoke a single Lambda instance
+        Invoke a single Lambda instance with rewritten SQL for specific partitions
 
         Args:
             query: Query to execute
@@ -144,9 +176,21 @@ class FaaSExecutor(BaseExecutor):
                 'instance_id': instance_id
             }
 
+        # Get table name and data location from query metadata
+        table_name = query.metadata.get('table_name', 'lineitem') if query.metadata else 'lineitem'
+        data_location = query.metadata.get('data_location', 's3://ease-data/tpch') if query.metadata else 's3://ease-data/tpch'
+
+        # Rewrite SQL for this instance's partitions
+        rewritten_sql = self._rewrite_sql_for_partitions(
+            query.sql,
+            partition_ids,
+            table_name,
+            data_location
+        )
+
         payload = {
             'query_id': query.query_id,
-            'sql': query.sql,
+            'sql': rewritten_sql,  # Send rewritten SQL, not original
             'partition_ids': partition_ids,
             'instance_id': instance_id,
             'metadata': query.metadata

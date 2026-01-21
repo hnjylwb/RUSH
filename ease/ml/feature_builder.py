@@ -19,18 +19,16 @@ class FeatureBuilder:
 
     Feature Sets:
     - ENCODE_FEATURES: ["num_tables", "num_joins"]
-    - SCAN_FEATURES: ["cardinality", "width", "children_card"] (Phase 2)
-    - JOIN_FEATURES: ["cardinality", "width", "children_card"] (Phase 2)
-    - FILTER_FEATURES: ["operator", "literal_feature"] (Phase 2)
-    - COLUMN_FEATURES: ["avg_width", "correlation", "data_type", "n_distinct", "null_frac"] (Phase 2)
-    - TABLE_FEATURES: ["reltuples", "relcols"] (Phase 2)
-
-    Current implementation (Phase 1):
-    - Only ENCODE_FEATURES (num_tables, num_joins)
+    - SCAN_FEATURES: ["cardinality", "width", "children_card"]
+    - JOIN_FEATURES: ["cardinality", "width", "children_card"]
 
     Usage:
+        # Basic features from parsed query
         builder = FeatureBuilder()
         features = builder.extract_encode_features(parsed_query)
+
+        # Advanced features from DuckDB plan
+        features = builder.build_feature_vector_from_plan(parsed_plan)
     """
 
     def __init__(self, config: Optional[Dict] = None):
@@ -59,91 +57,6 @@ class FeatureBuilder:
             float(parsed_query.num_joins),
         ]
 
-    def extract_scan_features(self, parsed_query: ParsedQuery) -> List[List[float]]:
-        """
-        Extract SCAN features for each scan node (Phase 2)
-
-        SCAN_FEATURES = ["cardinality", "width", "children_card"]
-
-        Args:
-            parsed_query: Parsed query object
-
-        Returns:
-            List of feature vectors, one per scan node
-        """
-        # TODO: Implement in Phase 2
-        raise NotImplementedError("SCAN feature extraction not yet implemented")
-
-    def extract_join_features(self, parsed_query: ParsedQuery) -> List[List[float]]:
-        """
-        Extract JOIN features for each join node (Phase 2)
-
-        JOIN_FEATURES = ["cardinality", "width", "children_card"]
-
-        Args:
-            parsed_query: Parsed query object
-
-        Returns:
-            List of feature vectors, one per join node
-        """
-        # TODO: Implement in Phase 2
-        raise NotImplementedError("JOIN feature extraction not yet implemented")
-
-    def extract_filter_features(self, parsed_query: ParsedQuery) -> List[List[float]]:
-        """
-        Extract FILTER features for each filter condition (Phase 2)
-
-        FILTER_FEATURES = ["operator", "literal_feature"]
-
-        Args:
-            parsed_query: Parsed query object
-
-        Returns:
-            List of feature vectors, one per filter
-        """
-        # TODO: Implement in Phase 2
-        raise NotImplementedError("FILTER feature extraction not yet implemented")
-
-    def extract_column_features(
-        self,
-        parsed_query: ParsedQuery,
-        database_stats: Dict[str, Any]
-    ) -> List[List[float]]:
-        """
-        Extract COLUMN features from database statistics (Phase 2)
-
-        COLUMN_FEATURES = ["avg_width", "correlation", "data_type", "n_distinct", "null_frac"]
-
-        Args:
-            parsed_query: Parsed query object
-            database_stats: Database statistics dictionary
-
-        Returns:
-            List of feature vectors, one per column
-        """
-        # TODO: Implement in Phase 2
-        raise NotImplementedError("COLUMN feature extraction not yet implemented")
-
-    def extract_table_features(
-        self,
-        parsed_query: ParsedQuery,
-        database_stats: Dict[str, Any]
-    ) -> List[List[float]]:
-        """
-        Extract TABLE features from database statistics (Phase 2)
-
-        TABLE_FEATURES = ["reltuples", "relcols"]
-
-        Args:
-            parsed_query: Parsed query object
-            database_stats: Database statistics dictionary
-
-        Returns:
-            List of feature vectors, one per table
-        """
-        # TODO: Implement in Phase 2
-        raise NotImplementedError("TABLE feature extraction not yet implemented")
-
     def build_feature_vector(
         self,
         parsed_query: ParsedQuery,
@@ -152,30 +65,17 @@ class FeatureBuilder:
         """
         Build complete feature vector for a query
 
-        Current implementation (Phase 1):
-        - Only includes ENCODE_FEATURES (num_tables, num_joins)
-
-        Future implementation (Phase 2):
-        - Will include all feature types and build graph structure
+        Currently only includes ENCODE_FEATURES (num_tables, num_joins).
+        For more advanced features, use build_feature_vector_from_plan() with a DuckDB plan.
 
         Args:
             parsed_query: Parsed query object
-            database_stats: Optional database statistics
+            database_stats: Optional database statistics (not used currently)
 
         Returns:
             Feature vector
         """
-        # Phase 1: Only ENCODE features
-        encode_features = self.extract_encode_features(parsed_query)
-
-        # In Phase 2, we would also extract:
-        # - SCAN features
-        # - JOIN features
-        # - FILTER features
-        # - COLUMN features (requires database_stats)
-        # - TABLE features (requires database_stats)
-
-        return encode_features
+        return self.extract_encode_features(parsed_query)
 
     def get_feature_names(self) -> List[str]:
         """
@@ -184,16 +84,10 @@ class FeatureBuilder:
         Returns:
             List of feature names
         """
-        # Phase 1: Only ENCODE features
         return [
             "num_tables",
             "num_joins",
         ]
-
-        # Phase 2 will include:
-        # - "scan_cardinality_{i}" for each scan node
-        # - "join_cardinality_{i}" for each join node
-        # - etc.
 
     def get_num_features(self) -> int:
         """
@@ -204,7 +98,7 @@ class FeatureBuilder:
         """
         return len(self.get_feature_names())
 
-    # ========== Phase 2: DuckDB Plan Feature Extraction ==========
+    # ========== DuckDB Plan Feature Extraction ==========
 
     def extract_scan_features_from_plan(
         self,

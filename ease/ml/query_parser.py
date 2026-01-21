@@ -205,37 +205,3 @@ class QueryParser:
                 tables.append(table_name)
 
         return tables
-
-    def parse_with_explain(
-        self,
-        sql: str,
-        explain_plan: str,
-        database_stats: Optional[Dict] = None
-    ) -> Optional[ParsedQuery]:
-        """
-        Parse SQL query with EXPLAIN plan (Phase 2 - Future implementation)
-
-        This method will parse the EXPLAIN plan output to extract detailed
-        features like cardinality, width, selectivity, etc.
-
-        Args:
-            sql: SQL query string
-            explain_plan: EXPLAIN plan output from database
-            database_stats: Optional database statistics
-
-        Returns:
-            ParsedQuery with detailed features, or None if parsing fails
-        """
-        # TODO: Implement EXPLAIN plan parsing
-        # This requires:
-        # 1. Parse EXPLAIN output (format varies by database)
-        # 2. Build plan tree
-        # 3. Extract scan nodes with cardinality
-        # 4. Extract join nodes with cardinality
-        # 5. Extract filter conditions
-        # 6. Map to database statistics
-
-        raise NotImplementedError(
-            "EXPLAIN plan parsing not yet implemented. "
-            "Use parse_query() for basic feature extraction."
-        )
