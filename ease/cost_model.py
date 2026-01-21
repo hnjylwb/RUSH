@@ -128,7 +128,26 @@ class CostModel:
         # Overall utilization: max of resource and memory utilization
         utilization = max(resource_utilization, memory_utilization)
 
-        cost = total_time * cost_per_second * utilization
+        # VM execution cost
+        execution_cost = total_time * cost_per_second * utilization
+
+        # === S3 Access Cost (VM) ===
+        # VM only has S3 GET requests for reading input data
+        # AWS S3 pricing: $0.0004 per 1,000 GET requests
+
+        s3_get_cost_per_1000 = vm_config.get('s3_get_cost_per_1000', 0.0004)
+        s3_request_size_mb = vm_config.get('s3_request_size_mb', 64)  # Typical S3 object size
+
+        # Calculate number of GET requests across all stages
+        total_s3_get_requests = 0
+        for stage_idx in range(resources.num_stages):
+            data_scanned_mb = resources.data_scanned[stage_idx] / (1024 * 1024)
+            num_requests = max(1, data_scanned_mb / s3_request_size_mb)
+            total_s3_get_requests += num_requests
+
+        s3_cost = (total_s3_get_requests / 1000.0) * s3_get_cost_per_1000
+
+        cost = execution_cost + s3_cost
 
         return CostEstimate(
             execution_time=total_time,
@@ -140,8 +159,14 @@ class CostModel:
         """
         Estimate time and cost for FaaS execution
 
-        Performance model: Parallel execution with instance selection
-        Each stage: work is distributed across multiple instances
+        Performance model: Parallel execution with optimized memory selection
+        - Memory selection optimizes for both performance and cost
+        - Each stage independently selects optimal memory configuration
+        - Instance count based on 256 MB partitions per instance
+
+        Lambda resource scaling:
+        - CPU: 0-10 GB linear growth (~1.769 GB = 1 vCPU)
+        - Network IO: 0-2 GB linear to 75 MB/s, 2-10 GB constant at 75 MB/s
 
         Args:
             resources: Query resource requirements (multi-stage)
@@ -150,71 +175,152 @@ class CostModel:
         Returns:
             CostEstimate with time and cost
         """
-        # === Select appropriate Lambda instance ===
+        # === Lambda Resource Scaling Functions ===
 
-        memory_sizes = sorted(faas_config['memory_sizes_gb'])
+        def get_cpu_cores(memory_gb: float) -> float:
+            """Get CPU cores for given memory (1.769 GB = 1 vCPU)"""
+            return memory_gb / 1.769 / 2
 
-        # Select based on memory requirement
-        memory_required_gb = resources.memory_required / (1024 ** 3)
-        required_memory_gb = max(2, memory_required_gb * 1.2)  # 20% buffer
+        def get_io_mbps(memory_gb: float) -> float:
+            """Get network IO bandwidth in MB/s"""
+            if memory_gb <= 2.0:
+                # Linear: 0 GB → 0 MB/s, 2 GB → 75 MB/s
+                return 37.5 * memory_gb
+            else:
+                # Saturated at 2 GB
+                return 75.0
 
-        # Select smallest memory size that meets requirement
-        selected_memory_gb = None
-        for mem_gb in memory_sizes:
-            if mem_gb >= required_memory_gb:
-                selected_memory_gb = mem_gb
-                break
+        def estimate_stage_time(memory_gb: float, stage_idx: int, num_instances: int) -> float:
+            """Estimate execution time for a stage with given memory and instances"""
+            # Per-instance capacity
+            cpu_per_instance = get_cpu_cores(memory_gb)
+            io_per_instance = get_io_mbps(memory_gb)
 
-        # If no size is large enough, use largest
-        if selected_memory_gb is None:
-            selected_memory_gb = memory_sizes[-1]
+            # Total capacity across all instances
+            total_cpu = cpu_per_instance * num_instances
+            total_io = io_per_instance * num_instances
 
-        # === Performance Estimation ===
-
-        # Lambda CPU and IO scale with memory
-        cpu_per_gb = 1.0 / 1.8
-        io_per_gb_mbps = 75
-
-        single_instance_cpu = selected_memory_gb * cpu_per_gb
-        single_instance_io = selected_memory_gb * io_per_gb_mbps
-
-        # Estimate number of parallel invocations
-        num_partitions = 100  # Default partition count
-        max_instances = min(100, int(selected_memory_gb * 10))
-        instances_to_use = min(max_instances, num_partitions)
-
-        # Total capacity across all instances
-        total_cpu = single_instance_cpu * instances_to_use
-        total_io = single_instance_io * instances_to_use
-
-        # Estimate execution time for each stage
-        total_time = 0.0
-
-        for stage_idx in range(resources.num_stages):
-            # CPU time: work = cpu_time, capacity = total_cpu
-            # Time needed = cpu_time / total_cpu
+            # Time for CPU work
             cpu_time_needed = resources.cpu_time[stage_idx] / total_cpu
 
-            # I/O time: work = data_scanned, capacity = total_io
-            # Time needed = data_scanned / total_io
+            # Time for IO work
             data_scanned_mb = resources.data_scanned[stage_idx] / (1024 * 1024)
             io_time_needed = data_scanned_mb / total_io
 
-            # Stage time is the max of CPU and I/O
-            stage_time = max(cpu_time_needed, io_time_needed)
-            total_time += stage_time
+            # Stage time is bottleneck (max of CPU and IO)
+            return max(cpu_time_needed, io_time_needed)
+
+        # === Memory Selection and Execution ===
+
+        memory_sizes = sorted(faas_config['memory_sizes_gb'])
+        cost_per_gb_second = faas_config['cost_per_gb_second']
+
+        # Minimum memory requirement (with 20% buffer)
+        memory_required_gb = resources.memory_required / (1024 ** 3)
+        min_memory_gb = max(0.128, memory_required_gb * 1.2)
+
+        # Filter candidate memory sizes that meet minimum requirement
+        candidate_memories = [m for m in memory_sizes if m >= min_memory_gb]
+        if not candidate_memories:
+            # If none meet requirement, use largest available
+            candidate_memories = [memory_sizes[-1]]
+
+        # Process each stage independently
+        total_time = 0.0
+        total_gb_seconds = 0.0
+
+        for stage_idx in range(resources.num_stages):
+            # Calculate number of instances (256 MB per instance)
+            partition_size_mb = 256
+            data_scanned_mb = resources.data_scanned[stage_idx] / (1024 * 1024)
+            num_instances = max(1, int(data_scanned_mb / partition_size_mb))
+
+            # Find optimal memory for this stage
+            # Strategy: For Lambda's pricing model (time × memory × rate),
+            # cost is often similar across memory sizes for CPU/IO-bound workloads.
+            # Optimization goals:
+            # 1. Minimize cost
+            # 2. If costs are similar (within 5%), prefer faster execution
+            # 3. For IO-bound: no benefit beyond 2 GB (IO saturates)
+            best_memory = None
+            best_time = float('inf')
+            best_cost = float('inf')
+
+            for memory_gb in candidate_memories:
+                # Estimate time and cost for this memory configuration
+                stage_time = estimate_stage_time(memory_gb, stage_idx, num_instances)
+                stage_cost = stage_time * memory_gb * num_instances * cost_per_gb_second
+
+                # Determine if IO-bound or CPU-bound
+                data_scanned_mb = resources.data_scanned[stage_idx] / (1024 * 1024)
+                io_time = (data_scanned_mb / num_instances) / get_io_mbps(memory_gb)
+                cpu_time = resources.cpu_time[stage_idx] / (get_cpu_cores(memory_gb) * num_instances)
+                is_io_bound = io_time >= cpu_time
+
+                # Selection logic:
+                # 1. If costs differ significantly (>5%), choose cheaper
+                # 2. If costs similar, choose faster (lower time)
+                # 3. For IO-bound workloads at 2+ GB, stop (IO saturated)
+
+                cost_diff_ratio = abs(stage_cost - best_cost) / (best_cost + 1e-9)
+
+                if stage_cost < best_cost * 0.95:
+                    # Significantly cheaper
+                    best_memory = memory_gb
+                    best_time = stage_time
+                    best_cost = stage_cost
+                elif cost_diff_ratio < 0.05:
+                    # Similar cost, prefer faster
+                    if stage_time < best_time:
+                        best_memory = memory_gb
+                        best_time = stage_time
+                        best_cost = stage_cost
+
+                # Early stopping for IO-bound workloads
+                if is_io_bound and memory_gb >= 2.0:
+                    # IO saturated, no benefit from more memory
+                    break
+
+            # Use the selected optimal memory for this stage
+            total_time += best_time
+            total_gb_seconds += best_time * best_memory * num_instances
 
         # === Cost Estimation ===
 
-        cost_per_gb_second = faas_config['cost_per_gb_second']
+        execution_cost = total_gb_seconds * cost_per_gb_second
 
-        gb_seconds = total_time * selected_memory_gb * instances_to_use
-        execution_cost = gb_seconds * cost_per_gb_second
+        # === S3 Access Cost (FaaS) ===
+        # FaaS has both GET (read input) and PUT (write shuffle) costs
+        # AWS S3 pricing:
+        #   GET: $0.0004 per 1,000 requests
+        #   PUT: $0.005 per 1,000 requests
 
-        # Additional costs (S3, network, etc.)
-        additional_cost = execution_cost * 0.1
+        s3_get_cost_per_1000 = faas_config.get('s3_get_cost_per_1000', 0.0004)
+        s3_put_cost_per_1000 = faas_config.get('s3_put_cost_per_1000', 0.005)
+        s3_request_size_mb = faas_config.get('s3_request_size_mb', 64)  # Typical S3 object size
 
-        cost = execution_cost + additional_cost
+        total_s3_get_requests = 0
+        total_s3_put_requests = 0
+
+        for stage_idx in range(resources.num_stages):
+            data_scanned_mb = resources.data_scanned[stage_idx] / (1024 * 1024)
+
+            # GET requests: reading input data
+            num_get_requests = max(1, data_scanned_mb / s3_request_size_mb)
+            total_s3_get_requests += num_get_requests
+
+            # PUT requests: writing shuffle data (if not the last stage)
+            # Assume each stage writes intermediate results equal to data scanned
+            # Last stage typically writes final results to client, not S3
+            if stage_idx < resources.num_stages - 1:
+                num_put_requests = max(1, data_scanned_mb / s3_request_size_mb)
+                total_s3_put_requests += num_put_requests
+
+        s3_get_cost = (total_s3_get_requests / 1000.0) * s3_get_cost_per_1000
+        s3_put_cost = (total_s3_put_requests / 1000.0) * s3_put_cost_per_1000
+        s3_cost = s3_get_cost + s3_put_cost
+
+        cost = execution_cost + s3_cost
 
         return CostEstimate(
             execution_time=total_time,

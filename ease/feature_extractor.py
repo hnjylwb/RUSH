@@ -6,8 +6,6 @@ Supports multiple levels of feature extraction:
 1. Basic: Uses only data scanned (simple, available from resource requirements)
 2. SQL-based: Parses SQL to extract structural features (num_tables, num_joins)
 3. Plan-based: Parses EXPLAIN plan for detailed features (requires database connection)
-
-Reference: BRAD's approach for Athena cost modeling
 """
 
 from typing import List, Dict, Optional
@@ -36,7 +34,7 @@ class QaaSFeatureExtractor:
 
     3. **Plan-based (Phase 2 - Future)**: Parses EXPLAIN plan for detailed features
        - Requires EXPLAIN plan from database
-       - Corresponds to BRAD's AthenaZeroShotModel (graph neural network)
+       - Graph neural network based approach
        - Features include:
          * ENCODE_FEATURES: num_tables, num_joins
          * SCAN_FEATURES: cardinality, width, children_card
@@ -45,11 +43,6 @@ class QaaSFeatureExtractor:
          * COLUMN_FEATURES: avg_width, correlation, data_type, n_distinct, null_frac
          * TABLE_FEATURES: reltuples, relcols
        - Use case: Sophisticated GNN-based prediction
-
-    References:
-        - bk/brad/src/brad/cost_model/encoder/specific_models/athena_zero_shot.py
-        - bk/brad/workloads/cross_db_benchmark/benchmark_tools/athena/parse_query.py
-        - bk/brad/src/brad/cost_model/dataset/query_featurization/athena_query_featurization.py
     """
 
     def __init__(self, config: Optional[Dict] = None):

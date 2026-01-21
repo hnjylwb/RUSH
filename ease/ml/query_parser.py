@@ -2,11 +2,6 @@
 Query Parser for extracting features from SQL queries
 
 Parses SQL queries and their EXPLAIN plans to extract features for cost estimation.
-Modeled after BRAD's query parsing pipeline.
-
-References:
-    - bk/brad/workloads/cross_db_benchmark/benchmark_tools/parse_run.py
-    - bk/brad/src/brad/cost_model/training/infer_brad.py
 """
 
 from typing import Dict, List, Optional, Any, Tuple
@@ -54,10 +49,10 @@ class QueryParser:
     - Does NOT require EXPLAIN plan (uses regex-based SQL parsing)
     - Does NOT require database connection
 
-    Future implementation (Phase 2 - Full BRAD approach):
+    Future implementation (Phase 2 - Advanced):
     - Parse EXPLAIN plan to get cardinality, width, etc.
     - Build graph structure for GNN model
-    - Extract all features matching BRAD's featurization
+    - Extract all features for sophisticated cost estimation
 
     Usage:
         parser = QueryParser()

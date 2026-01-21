@@ -2,9 +2,6 @@
 Feature Builder for constructing feature vectors from parsed queries
 
 Converts parsed query structures into feature vectors suitable for ML models.
-
-References:
-    - bk/brad/src/brad/cost_model/dataset/query_featurization/athena_query_featurization.py
 """
 
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
@@ -20,7 +17,7 @@ class FeatureBuilder:
 
     Constructs feature vectors from parsed queries for use in ML models.
 
-    Feature Sets (matching BRAD's Athena featurization):
+    Feature Sets:
     - ENCODE_FEATURES: ["num_tables", "num_joins"]
     - SCAN_FEATURES: ["cardinality", "width", "children_card"] (Phase 2)
     - JOIN_FEATURES: ["cardinality", "width", "children_card"] (Phase 2)

@@ -8,10 +8,6 @@ DuckDB is used because:
 2. Column-store architecture similar to Athena/QaaS
 3. Clean JSON EXPLAIN format
 4. Fast local execution
-
-References:
-    - DuckDB EXPLAIN: https://duckdb.org/docs/guides/meta/explain
-    - BRAD's parse_plan.py for structure inspiration
 """
 
 from typing import Dict, List, Optional, Any, Tuple
